@@ -264,7 +264,7 @@ export function AuthPage() {
                   type="text"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
-                  placeholder="Atasi Saha"
+                  placeholder="Olivia Rodrigo"
                   className="w-full rounded-xl border-2 border-[#29232D] px-3 py-2 text-sm text-[#29232D] focus:outline-none"
                 />
               </div>
@@ -277,7 +277,7 @@ export function AuthPage() {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="atasi@university.edu"
+                  placeholder="olivia@university.edu"
                   className="w-full rounded-xl border-2 border-[#29232D] px-3 py-2 text-sm text-[#29232D] focus:outline-none"
                 />
               </div>
