@@ -1,0 +1,8 @@
+{
+  "name": "GradePath",
+  "description": "Academic performance tracking, GPA prediction, improvement simulation, and study planning platform for university students.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Poppins", "Nunito Sans", sans-serif;
+  --font-mono: "Poppins", "Nunito Sans", sans-serif;
+
+  --color-peach: #F8D0CC;
+  --color-peach-light: #FCE2DE;
+  --color-purple-deep: #7955A1;
+  --color-purple-soft: #A88BC5;
+  --color-coral: #F29A9C;
+  --color-yellow-warm: #F6D36B;
+  --color-sky: #75B9DF;
+  --color-mint: #A7D9AE;
+  --color-charcoal: #29232D;
+  --color-soft-gray: #F5F3F2;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    color: #29232D;
+    background-color: #FCE2DE;
+    scroll-behavior: smooth;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
