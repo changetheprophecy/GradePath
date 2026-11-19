@@ -2,6 +2,8 @@ import React, { useMemo, useState } from 'react';
 import {
   Bookmark,
   BookOpen,
+  CheckCircle2,
+  Circle,
   ExternalLink,
   FileText,
   FolderOpen,
@@ -31,14 +33,92 @@ const CATEGORY_TINTS: Record<ResourceCategory, string> = {
   'Reference Links': 'bg-[#DCEFF8]',
 };
 
+const CATEGORY_RING_COLORS: Record<ResourceCategory, string> = {
+  'Lecture Notes': '#F29A9C',
+  'PDF Files': '#E5B324',
+  'Course Materials': '#7955A1',
+  'Past Exam Questions': '#4CAF72',
+  'Reference Links': '#569EC9',
+};
+
+function CircularProgressRing({
+  percentage,
+  color,
+  size = 64,
+  strokeWidth = 7,
+}: {
+  percentage: number;
+  color: string;
+  size?: number;
+  strokeWidth?: number;
+}) {
+  const clamped = Math.max(0, Math.min(100, Math.round(percentage)));
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference - (clamped / 100) * circumference;
+
+  return (
+    <div
+      className="relative inline-flex items-center justify-center shrink-0"
+      style={{ width: size, height: size }}
+      role="progressbar"
+      aria-valuenow={clamped}
+      aria-valuemin={0}
+      aria-valuemax={100}
+    >
+      <svg width={size} height={size} className="-rotate-90" aria-hidden="true">
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="#FFFFFF"
+          stroke="#E8E4E1"
+          strokeWidth={strokeWidth}
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="transparent"
+          stroke={color}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={strokeDashoffset}
+          className="transition-all duration-500 ease-out"
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius + strokeWidth / 2}
+          fill="transparent"
+          stroke="#29232D"
+          strokeWidth={1.5}
+        />
+      </svg>
+      <span className="absolute font-display text-xs font-extrabold text-[#29232D] tabular-nums">
+        {clamped}%
+      </span>
+    </div>
+  );
+}
+
 export function StudyLibraryPage() {
-  const { resources, courses, addResource, toggleBookmark, deleteResource } =
-    useAcademic();
+  const {
+    resources,
+    courses,
+    addResource,
+    toggleBookmark,
+    toggleResourceCompleted,
+    markResourceReviewed,
+    deleteResource,
+  } = useAcademic();
 
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<'all' | ResourceCategory>('all');
   const [courseFilter, setCourseFilter] = useState<string>('all');
   const [bookmarksOnly, setBookmarksOnly] = useState(false);
+  const [reviewFilter, setReviewFilter] = useState<'all' | 'pending' | 'completed'>('all');
 
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [title, setTitle] = useState('');
@@ -59,12 +139,41 @@ export function StudyLibraryPage() {
     return Array.from(set).sort();
   }, [courses, resources]);
 
+  const scopedByCourseResources = useMemo(() => {
+    if (courseFilter === 'all') return resources;
+    return resources.filter((res) => res.courseCode === courseFilter);
+  }, [resources, courseFilter]);
+
+  const categoryProgress = useMemo(() => {
+    return CATEGORIES.map((cat) => {
+      const items = scopedByCourseResources.filter((r) => r.category === cat);
+      const completedCount = items.filter((r) => Boolean(r.completed)).length;
+      const totalCount = items.length;
+      const percentage = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+      return {
+        category: cat,
+        completedCount,
+        totalCount,
+        percentage,
+      };
+    });
+  }, [scopedByCourseResources]);
+
+  const overallStats = useMemo(() => {
+    const total = scopedByCourseResources.length;
+    const completed = scopedByCourseResources.filter((r) => Boolean(r.completed)).length;
+    const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
+    return { total, completed, percentage };
+  }, [scopedByCourseResources]);
+
   const filteredResources = useMemo(() => {
     const q = query.trim().toLowerCase();
     return resources.filter((res) => {
       if (categoryFilter !== 'all' && res.category !== categoryFilter) return false;
       if (courseFilter !== 'all' && res.courseCode !== courseFilter) return false;
       if (bookmarksOnly && !res.bookmarked) return false;
+      if (reviewFilter === 'pending' && res.completed) return false;
+      if (reviewFilter === 'completed' && !res.completed) return false;
       if (
         q &&
         !res.title.toLowerCase().includes(q) &&
@@ -75,7 +184,7 @@ export function StudyLibraryPage() {
       }
       return true;
     });
-  }, [resources, query, categoryFilter, courseFilter, bookmarksOnly]);
+  }, [resources, query, categoryFilter, courseFilter, bookmarksOnly, reviewFilter]);
 
   const handleFilePick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -107,6 +216,7 @@ export function StudyLibraryPage() {
       fileSize: fileSize.trim() || undefined,
       notes: notes.trim() || undefined,
       bookmarked: false,
+      completed: false,
     });
     setTitle('');
     setUrl('');
@@ -121,11 +231,16 @@ export function StudyLibraryPage() {
     <div className="space-y-6">
       <div className="rounded-[22px] border-2 border-[#29232D] bg-white p-5 sm:p-6 shadow-[4px_4px_0_#29232D] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="font-display text-2xl font-extrabold tracking-tight text-[#29232D]">
-            Study Library
-          </h2>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h2 className="font-display text-2xl font-extrabold tracking-tight text-[#29232D]">
+              Study Library
+            </h2>
+            <span className="rounded-lg border-2 border-[#29232D] bg-[#DDF3E0] px-2.5 py-0.5 text-xs font-extrabold text-[#29232D] tabular-nums">
+              {overallStats.completed}/{overallStats.total} reviewed ({overallStats.percentage}%)
+            </span>
+          </div>
           <p className="mt-1 text-sm font-medium text-[#29232D]/75">
-            Organize lecture notes, PDFs, past exam papers, and reference links by course.
+            Organize lecture notes, PDFs, past exam papers, and track reviewed topics across every category.
           </p>
         </div>
 
@@ -138,6 +253,38 @@ export function StudyLibraryPage() {
           Add Resource
         </button>
       </div>
+
+      {/* Category Progress Rings */}
+      <section aria-label="Category Review Progress" className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
+        {categoryProgress.map(({ category: cat, completedCount, totalCount, percentage }) => {
+          const isSelected = categoryFilter === cat;
+          const tint = CATEGORY_TINTS[cat];
+          const ringColor = CATEGORY_RING_COLORS[cat];
+
+          return (
+            <button
+              key={cat}
+              type="button"
+              onClick={() => setCategoryFilter((prev) => (prev === cat ? 'all' : cat))}
+              className={`text-left rounded-[20px] border-2 border-[#29232D] p-4 transition-all flex flex-col items-center text-center ${
+                isSelected
+                  ? `${tint} shadow-[4px_4px_0_#29232D] -translate-y-0.5`
+                  : 'bg-white shadow-[3px_3px_0_#29232D] hover:bg-[#FCE2DE]/40'
+              }`}
+            >
+              <CircularProgressRing percentage={percentage} color={ringColor} />
+              <p className="mt-3 font-display text-xs font-extrabold text-[#29232D] leading-snug">
+                {cat}
+              </p>
+              <p className="mt-0.5 text-[11px] font-bold text-[#29232D]/70 tabular-nums">
+                {totalCount === 0
+                  ? 'No resources yet'
+                  : `${completedCount} of ${totalCount} reviewed`}
+              </p>
+            </button>
+          );
+        })}
+      </section>
 
       {/* Filters Bar */}
       <div className="space-y-3">
@@ -166,6 +313,19 @@ export function StudyLibraryPage() {
                   {code}
                 </option>
               ))}
+            </select>
+
+            <select
+              value={reviewFilter}
+              onChange={(e) =>
+                setReviewFilter(e.target.value as 'all' | 'pending' | 'completed')
+              }
+              aria-label="Filter by review status"
+              className="rounded-xl border-2 border-[#29232D] bg-white px-3 py-2 text-xs font-bold text-[#29232D] focus:outline-none"
+            >
+              <option value="all">All Status</option>
+              <option value="pending">To Review</option>
+              <option value="completed">Reviewed</option>
             </select>
 
             <button
@@ -277,15 +437,47 @@ export function StudyLibraryPage() {
                   </div>
 
                   <div className="p-5">
-                    <h3 className="font-display text-base font-extrabold text-[#29232D] leading-snug">
-                      {res.title}
-                    </h3>
+                    <div className="flex items-start justify-between gap-2">
+                      <h3 className="font-display text-base font-extrabold text-[#29232D] leading-snug">
+                        {res.title}
+                      </h3>
+                    </div>
 
                     {res.notes && (
                       <p className="mt-2 text-xs font-medium text-[#29232D]/75 leading-relaxed">
                         {res.notes}
                       </p>
                     )}
+
+                    <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleResourceCompleted(res.id)}
+                        className={`inline-flex items-center gap-1.5 rounded-xl border-2 border-[#29232D] px-3 py-1.5 text-xs font-bold transition-colors ${
+                          res.completed
+                            ? 'bg-[#A7D9AE] text-[#29232D]'
+                            : 'bg-white text-[#29232D] hover:bg-[#FFF4D6]'
+                        }`}
+                      >
+                        {res.completed ? (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5 text-[#29232D]" />
+                            Reviewed
+                          </>
+                        ) : (
+                          <>
+                            <Circle className="h-3.5 w-3.5 text-[#7955A1]" />
+                            Mark Reviewed
+                          </>
+                        )}
+                      </button>
+
+                      {res.completed && res.reviewedAt && (
+                        <span className="text-[11px] font-semibold text-[#29232D]/60 tabular-nums">
+                          Reviewed {res.reviewedAt}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -298,6 +490,7 @@ export function StudyLibraryPage() {
                           href={res.url}
                           target="_blank"
                           rel="noreferrer"
+                          onClick={() => markResourceReviewed(res.id)}
                           className="inline-flex items-center gap-1 font-bold text-[#7955A1] hover:underline truncate"
                         >
                           Open reference
@@ -307,9 +500,14 @@ export function StudyLibraryPage() {
                     ) : res.fileName ? (
                       <>
                         <FileText className="h-3.5 w-3.5 shrink-0 text-[#7955A1]" />
-                        <span className="truncate font-mono text-[11px] font-bold">
+                        <button
+                          type="button"
+                          onClick={() => markResourceReviewed(res.id)}
+                          className="truncate font-mono text-[11px] font-bold hover:text-[#7955A1] text-left"
+                          title="Click to mark as reviewed"
+                        >
                           {res.fileName}
-                        </span>
+                        </button>
                         {res.fileSize && (
                           <span className="text-[#29232D]/60 shrink-0">({res.fileSize})</span>
                         )}

@@ -9,11 +9,24 @@ export interface GradeScaleEntry {
   point: number;
 }
 
+export type AssessmentKind = 'midterm' | 'attendance' | 'final' | 'other';
+
+export interface AssessmentComponent {
+  id: string;
+  name: string;
+  kind: AssessmentKind;
+  maxMarks: number;
+  obtainedMarks: number | null;
+}
+
+export type AssessmentTemplateComponent = Omit<AssessmentComponent, 'obtainedMarks'>;
+
 export interface AcademicRules {
   improvementMaxPoint: number; // Default GP cutoff per course from the previous semester (strictly below this GP is eligible, e.g., 3.00)
   improvementBatchWindow: number; // Number of subsequent semesters allowed for improvement (e.g., 1)
   retakeBatchWindow: number; // Number of subsequent semesters allowed for failed/retake courses (e.g., 2)
-  minInternalMarks: number; // Minimum internal marks (M1 + M2 + Att) out of 30 required to sit for final/improvement (e.g., 12)
+  minInternalPercent: number; // Minimum internal marks percentage (e.g., 40%) required to sit for final/improvement
+  minInternalMarks?: number; // Legacy field kept optional for backwards migration
   replacementPolicy: ReplacementPolicy;
 }
 
@@ -23,11 +36,13 @@ export interface Course {
   code: string;
   name: string;
   credits: number;
-  midterm1: number | null; // max 10
-  midterm2: number | null; // max 10
-  attendance: number | null; // max 10
-  finalExam: number | null; // max 70
-  totalMarksOverride?: number | null; // optional direct total marks (/100) override
+  assessments: AssessmentComponent[];
+  totalMarksOverride?: number | null; // Optional direct total marks override (out of configured total max marks)
+  // Legacy optional fields kept only for migrating older saved workspaces
+  midterm1?: number | null;
+  midterm2?: number | null;
+  attendance?: number | null;
+  finalExam?: number | null;
   examFormSubmitted: boolean;
   upcomingExamDate?: string;
   improvementMaxPoint?: number | null; // Optional per-course improvement max point override for previous-semester eligibility
@@ -61,6 +76,8 @@ export interface StudyResource {
   fileSize?: string;
   notes?: string;
   bookmarked: boolean;
+  completed?: boolean;
+  reviewedAt?: string;
   createdAt: string;
 }
 
@@ -72,6 +89,8 @@ export interface ActivityItem {
   type: 'marks' | 'semester' | 'cgpa' | 'improvement' | 'library';
 }
 
+export type NotificationCategory = 'exam' | 'missing_marks' | 'low_internal' | 'system';
+
 export interface NotificationItem {
   id: string;
   title: string;
@@ -79,7 +98,19 @@ export interface NotificationItem {
   time: string;
   read: boolean;
   severity: 'info' | 'warning' | 'success';
+  category: NotificationCategory;
   targetPage?: AppPage;
+  targetSemesterId?: string;
+  courseId?: string;
+  urgent?: boolean;
+}
+
+export interface NotificationPreferences {
+  enabled: boolean;
+  examAlertsEnabled: boolean;
+  missingMarksAlertsEnabled: boolean;
+  examLeadDays: number;
+  browserNotificationsEnabled: boolean;
 }
 
 export interface StudentProfile {

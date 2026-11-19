@@ -1,5 +1,7 @@
 import {
   AcademicRules,
+  AssessmentComponent,
+  AssessmentTemplateComponent,
   Course,
   GradeScaleEntry,
   ReplacementPolicy,
@@ -23,69 +25,247 @@ export const DEFAULT_ACADEMIC_RULES: AcademicRules = {
   improvementMaxPoint: 3.0,
   improvementBatchWindow: 1,
   retakeBatchWindow: 2,
-  minInternalMarks: 12,
+  minInternalPercent: 40,
   replacementPolicy: 'replace_old',
 };
 
-export function clampMark(value: number | null, max: number): number | null {
-  if (value === null || Number.isNaN(value)) return null;
-  return Math.max(0, Math.min(max, value));
+export const DEFAULT_ASSESSMENT_TEMPLATE: AssessmentTemplateComponent[] = [
+  { id: 'mid-1', name: 'Midterm 1', kind: 'midterm', maxMarks: 10 },
+  { id: 'mid-2', name: 'Midterm 2', kind: 'midterm', maxMarks: 10 },
+  { id: 'att', name: 'Attendance', kind: 'attendance', maxMarks: 10 },
+  { id: 'final', name: 'Final Exam', kind: 'final', maxMarks: 70 },
+];
+
+export const ASSESSMENT_PRESETS: Array<{
+  id: string;
+  label: string;
+  components: AssessmentTemplateComponent[];
+}> = [
+  {
+    id: 'standard-10-10-10-70',
+    label: '2 Midterms + Attend + Final (10/10/10/70)',
+    components: [
+      { id: 'mid-1', name: 'Midterm 1', kind: 'midterm', maxMarks: 10 },
+      { id: 'mid-2', name: 'Midterm 2', kind: 'midterm', maxMarks: 10 },
+      { id: 'att', name: 'Attendance', kind: 'attendance', maxMarks: 10 },
+      { id: 'final', name: 'Final Exam', kind: 'final', maxMarks: 70 },
+    ],
+  },
+  {
+    id: 'balanced-15-15-10-10-50',
+    label: '2 Mid + Attend + Assign + Final (15/15/10/10/50)',
+    components: [
+      { id: 'mid-1', name: 'Midterm 1', kind: 'midterm', maxMarks: 15 },
+      { id: 'mid-2', name: 'Midterm 2', kind: 'midterm', maxMarks: 15 },
+      { id: 'att', name: 'Attendance', kind: 'attendance', maxMarks: 10 },
+      { id: 'assign', name: 'Assignment', kind: 'other', maxMarks: 10 },
+      { id: 'final', name: 'Final Exam', kind: 'final', maxMarks: 50 },
+    ],
+  },
+  {
+    id: 'single-mid-20-10-10-60',
+    label: '1 Midterm + Attend + Quiz + Final (20/10/10/60)',
+    components: [
+      { id: 'mid-1', name: 'Midterm', kind: 'midterm', maxMarks: 20 },
+      { id: 'att', name: 'Attendance', kind: 'attendance', maxMarks: 10 },
+      { id: 'quiz', name: 'Quizzes', kind: 'other', maxMarks: 10 },
+      { id: 'final', name: 'Final Exam', kind: 'final', maxMarks: 60 },
+    ],
+  },
+  {
+    id: 'lab-continuous',
+    label: 'Lab / Continuous Assessment (30/40/20/10)',
+    components: [
+      { id: 'lab', name: 'Lab Performance', kind: 'other', maxMarks: 30 },
+      { id: 'proj', name: 'Project / Practical', kind: 'other', maxMarks: 40 },
+      { id: 'viva', name: 'Presentation / Viva', kind: 'final', maxMarks: 20 },
+      { id: 'att', name: 'Attendance', kind: 'attendance', maxMarks: 10 },
+    ],
+  },
+];
+
+export function createAssessmentsFromTemplate(
+  template: AssessmentTemplateComponent[] = DEFAULT_ASSESSMENT_TEMPLATE
+): AssessmentComponent[] {
+  return template.map((comp, idx) => ({
+    id: comp.id || `comp-${idx}-${Date.now()}`,
+    name: comp.name,
+    kind: comp.kind,
+    maxMarks: comp.maxMarks,
+    obtainedMarks: null,
+  }));
 }
 
-export function getInternalMarks(course: Pick<Course, 'midterm1' | 'midterm2' | 'attendance'>): number {
-  return (course.midterm1 ?? 0) + (course.midterm2 ?? 0) + (course.attendance ?? 0);
+export function clampMark(value: number | null | undefined, max: number): number | null {
+  if (value === null || value === undefined || Number.isNaN(value)) return null;
+  return Math.round(Math.max(0, Math.min(max, value)) * 100) / 100;
+}
+
+export function migrateCourseAssessments(
+  rawCourse: Partial<Course> & Record<string, unknown>
+): AssessmentComponent[] {
+  if (Array.isArray(rawCourse.assessments) && rawCourse.assessments.length > 0) {
+    return rawCourse.assessments.map((item, idx) => {
+      const comp = item as Partial<AssessmentComponent>;
+      const maxMarks =
+        typeof comp.maxMarks === 'number' && !Number.isNaN(comp.maxMarks) && comp.maxMarks > 0
+          ? Math.round(comp.maxMarks * 100) / 100
+          : 10;
+      const obtained =
+        typeof comp.obtainedMarks === 'number' && !Number.isNaN(comp.obtainedMarks)
+          ? clampMark(comp.obtainedMarks, maxMarks)
+          : null;
+      return {
+        id: typeof comp.id === 'string' && comp.id ? comp.id : `comp-${idx}`,
+        name: typeof comp.name === 'string' && comp.name.trim() ? comp.name.trim() : `Assessment ${idx + 1}`,
+        kind:
+          comp.kind === 'midterm' ||
+          comp.kind === 'attendance' ||
+          comp.kind === 'final' ||
+          comp.kind === 'other'
+            ? comp.kind
+            : 'other',
+        maxMarks,
+        obtainedMarks: obtained,
+      };
+    });
+  }
+
+  return [
+    {
+      id: 'mid-1',
+      name: 'Midterm 1',
+      kind: 'midterm',
+      maxMarks: 10,
+      obtainedMarks: clampMark(rawCourse.midterm1 ?? null, 10),
+    },
+    {
+      id: 'mid-2',
+      name: 'Midterm 2',
+      kind: 'midterm',
+      maxMarks: 10,
+      obtainedMarks: clampMark(rawCourse.midterm2 ?? null, 10),
+    },
+    {
+      id: 'att',
+      name: 'Attendance',
+      kind: 'attendance',
+      maxMarks: 10,
+      obtainedMarks: clampMark(rawCourse.attendance ?? null, 10),
+    },
+    {
+      id: 'final',
+      name: 'Final Exam',
+      kind: 'final',
+      maxMarks: 70,
+      obtainedMarks: clampMark(rawCourse.finalExam ?? null, 70),
+    },
+  ];
+}
+
+export function getCourseMaxTotalMarks(
+  course: Pick<Course, 'assessments'>
+): number {
+  if (!course.assessments || course.assessments.length === 0) return 0;
+  const total = course.assessments.reduce((sum, a) => sum + (Number(a.maxMarks) || 0), 0);
+  return Math.round(total * 100) / 100;
+}
+
+export function getCourseInternalSummary(
+  course: Pick<Course, 'assessments'>
+): {
+  obtained: number;
+  max: number;
+  percentage: number | null;
+  hasAnyEntered: boolean;
+  allEntered: boolean;
+} {
+  const internalComps = (course.assessments ?? []).filter((a) => a.kind !== 'final');
+  if (internalComps.length === 0) {
+    return {
+      obtained: 0,
+      max: 0,
+      percentage: null,
+      hasAnyEntered: false,
+      allEntered: true,
+    };
+  }
+  const obtained = Math.round(
+    internalComps.reduce((sum, a) => sum + (a.obtainedMarks ?? 0), 0) * 100
+  ) / 100;
+  const max = Math.round(
+    internalComps.reduce((sum, a) => sum + (Number(a.maxMarks) || 0), 0) * 100
+  ) / 100;
+  const hasAnyEntered = internalComps.some((a) => a.obtainedMarks !== null);
+  const allEntered = internalComps.every((a) => a.obtainedMarks !== null);
+  const percentage = max > 0 ? Math.round((obtained / max) * 10000) / 100 : null;
+
+  return {
+    obtained,
+    max,
+    percentage,
+    hasAnyEntered,
+    allEntered,
+  };
 }
 
 export function isCourseFullyMarked(
-  course: Pick<Course, 'midterm1' | 'midterm2' | 'attendance' | 'finalExam' | 'totalMarksOverride'>
+  course: Pick<Course, 'assessments' | 'totalMarksOverride'>
 ): boolean {
   if (course.totalMarksOverride !== null && course.totalMarksOverride !== undefined) {
     return true;
   }
   return (
-    course.midterm1 !== null &&
-    course.midterm2 !== null &&
-    course.attendance !== null &&
-    course.finalExam !== null
+    course.assessments.length > 0 &&
+    course.assessments.every((a) => a.obtainedMarks !== null)
   );
 }
 
 export function hasFinalGrade(
-  course: Pick<Course, 'finalExam' | 'totalMarksOverride'>
+  course: Pick<Course, 'assessments' | 'totalMarksOverride'>
 ): boolean {
-  return (
-    course.finalExam !== null ||
-    (course.totalMarksOverride !== null && course.totalMarksOverride !== undefined)
-  );
+  if (course.totalMarksOverride !== null && course.totalMarksOverride !== undefined) {
+    return true;
+  }
+  if (!course.assessments || course.assessments.length === 0) {
+    return false;
+  }
+  const finals = course.assessments.filter((a) => a.kind === 'final');
+  if (finals.length > 0) {
+    return finals.every((a) => a.obtainedMarks !== null);
+  }
+  // If a course has no 'final' exam component (e.g., 100% continuous assessment),
+  // it has a final grade once all configured assessments have obtained marks.
+  return course.assessments.every((a) => a.obtainedMarks !== null);
 }
 
 export function calculateCourseTotalMarks(
-  course: Pick<Course, 'midterm1' | 'midterm2' | 'attendance' | 'finalExam' | 'totalMarksOverride'>
+  course: Pick<Course, 'assessments' | 'totalMarksOverride'>
 ): number | null {
   if (course.totalMarksOverride !== null && course.totalMarksOverride !== undefined) {
     return Math.round(course.totalMarksOverride * 100) / 100;
   }
-  if (
-    course.midterm1 === null &&
-    course.midterm2 === null &&
-    course.attendance === null &&
-    course.finalExam === null
-  ) {
+  if (!course.assessments || course.assessments.every((a) => a.obtainedMarks === null)) {
     return null;
   }
-  const total =
-    (course.midterm1 ?? 0) +
-    (course.midterm2 ?? 0) +
-    (course.attendance ?? 0) +
-    (course.finalExam ?? 0);
+  const total = course.assessments.reduce((sum, a) => sum + (a.obtainedMarks ?? 0), 0);
   return Math.round(total * 100) / 100;
 }
 
+export function calculateCoursePercentage(
+  course: Pick<Course, 'assessments' | 'totalMarksOverride'>
+): number | null {
+  const total = calculateCourseTotalMarks(course);
+  const maxMarks = getCourseMaxTotalMarks(course);
+  if (total === null || maxMarks <= 0) return null;
+  return Math.round((total / maxMarks) * 10000) / 100;
+}
+
 export function getGradeFromMarks(
-  totalMarks: number,
+  percentageScore: number,
   gradeScale: GradeScaleEntry[] = DEFAULT_GRADE_SCALE
 ): { letter: string; point: number } {
-  const rounded = Math.round(totalMarks);
+  const rounded = Math.round(percentageScore);
   const sorted = [...gradeScale].sort((a, b) => b.minMarks - a.minMarks);
   for (const entry of sorted) {
     if (rounded >= entry.minMarks) {
@@ -101,24 +281,39 @@ export function getLetterFromPoint(
 ): string {
   const match = gradeScale.find((g) => Math.abs(g.point - point) < 0.001);
   if (match) return match.letter;
-  const sorted = [...gradeScale].sort((a, b) => Math.abs(a.point - point) - Math.abs(b.point - point));
+  const sorted = [...gradeScale].sort(
+    (a, b) => Math.abs(a.point - point) - Math.abs(b.point - point)
+  );
   return sorted[0]?.letter ?? 'F';
 }
 
 export function getCourseOriginalGrade(
-  course: Course,
+  course: Pick<Course, 'assessments' | 'totalMarksOverride'>,
   gradeScale: GradeScaleEntry[] = DEFAULT_GRADE_SCALE
-): { totalMarks: number | null; letter: string | null; point: number | null } {
-  if (!hasFinalGrade(course)) {
+): {
+  totalMarks: number | null;
+  maxMarks: number;
+  percentage: number | null;
+  letter: string | null;
+  point: number | null;
+} {
+  const maxMarks = getCourseMaxTotalMarks(course);
+  const totalMarks = calculateCourseTotalMarks(course);
+  const percentage = calculateCoursePercentage(course);
+
+  if (!hasFinalGrade(course) || maxMarks <= 0) {
     return {
-      totalMarks: calculateCourseTotalMarks(course),
+      totalMarks,
+      maxMarks,
+      percentage,
       letter: null,
       point: null,
     };
   }
-  const total = calculateCourseTotalMarks(course) ?? 0;
-  const { letter, point } = getGradeFromMarks(total, gradeScale);
-  return { totalMarks: total, letter, point };
+
+  const resolvedPercentage = percentage ?? 0;
+  const { letter, point } = getGradeFromMarks(resolvedPercentage, gradeScale);
+  return { totalMarks: totalMarks ?? 0, maxMarks, percentage: resolvedPercentage, letter, point };
 }
 
 export function resolveEffectiveGradePoint(
@@ -243,6 +438,8 @@ export interface CourseImprovementEvaluation {
   originalPoint: number | null;
   effectivePoint: number | null;
   internalMarks: number;
+  internalMaxMarks: number;
+  internalPercent: number | null;
   status: ImprovementEligibilityStatus;
   statusLabel: string;
   reason: string;
@@ -261,13 +458,22 @@ export function evaluateCourseForImprovement(
   const isPreviousSemester = batchesElapsed === 1;
   const maxPointThreshold = course.improvementMaxPoint ?? rules.improvementMaxPoint;
   const { letter, point } = getCourseOriginalGrade(course, gradeScale);
-  const internalMarks = getInternalMarks(course);
+  const internal = getCourseInternalSummary(course);
+
+  const lowInternal =
+    internal.max > 0 &&
+    (internal.hasAnyEntered || course.totalMarksOverride == null) &&
+    (internal.percentage ?? 0) < rules.minInternalPercent;
 
   if (point === null) {
-    if (!course.examFormSubmitted || internalMarks < rules.minInternalMarks) {
+    if (!course.examFormSubmitted || (internal.allEntered && lowInternal)) {
       const reasons: string[] = [];
-      if (internalMarks < rules.minInternalMarks) {
-        reasons.push(`Internal marks ${internalMarks}/30 (< ${rules.minInternalMarks} minimum)`);
+      if (internal.allEntered && lowInternal) {
+        reasons.push(
+          `Internal marks ${internal.obtained}/${internal.max} (${Math.round(
+            internal.percentage ?? 0
+          )}% < ${rules.minInternalPercent}% minimum)`
+        );
       }
       if (!course.examFormSubmitted) {
         reasons.push('Exam form not submitted');
@@ -281,7 +487,9 @@ export function evaluateCourseForImprovement(
         originalLetter: letter,
         originalPoint: point,
         effectivePoint: point,
-        internalMarks,
+        internalMarks: internal.obtained,
+        internalMaxMarks: internal.max,
+        internalPercent: internal.percentage,
         status: 'retake_required',
         statusLabel: 'Retake Required',
         reason: `${reasons.join(' · ')}. Must follow retake policy within ${rules.retakeBatchWindow} batches.`,
@@ -296,10 +504,12 @@ export function evaluateCourseForImprovement(
       originalLetter: null,
       originalPoint: null,
       effectivePoint: null,
-      internalMarks,
+      internalMarks: internal.obtained,
+      internalMaxMarks: internal.max,
+      internalPercent: internal.percentage,
       status: 'in_progress',
       statusLabel: 'In Progress',
-      reason: 'Awaiting final examination marks.',
+      reason: 'Awaiting remaining assessment marks.',
     };
   }
 
@@ -319,14 +529,15 @@ export function evaluateCourseForImprovement(
       originalLetter: letter,
       originalPoint: point,
       effectivePoint,
-      internalMarks,
+      internalMarks: internal.obtained,
+      internalMaxMarks: internal.max,
+      internalPercent: internal.percentage,
       status: 'already_improved',
       statusLabel: 'Improved',
       reason: `Previously improved from ${point.toFixed(2)} to ${course.improvedGradePoint.toFixed(2)}.`,
     };
   }
 
-  // Current in-progress semester courses are not yet from a previous semester
   if (batchesElapsed === 0 && semester?.status === 'in_progress') {
     return {
       course,
@@ -337,20 +548,15 @@ export function evaluateCourseForImprovement(
       originalLetter: letter,
       originalPoint: point,
       effectivePoint,
-      internalMarks,
+      internalMarks: internal.obtained,
+      internalMaxMarks: internal.max,
+      internalPercent: internal.percentage,
       status: 'in_progress',
       statusLabel: 'Current Semester',
       reason: `Current term course (${point.toFixed(2)} GP). Improvement eligibility applies once it becomes a previous semester.`,
     };
   }
 
-  const hasAnyInternal =
-    course.midterm1 !== null || course.midterm2 !== null || course.attendance !== null;
-  const lowInternal =
-    (hasAnyInternal || course.totalMarksOverride == null) &&
-    internalMarks < rules.minInternalMarks;
-
-  // Check failed or internal/form disqualifications first
   if (point === 0 || !course.examFormSubmitted || lowInternal) {
     if (batchesElapsed > rules.retakeBatchWindow) {
       return {
@@ -362,7 +568,9 @@ export function evaluateCourseForImprovement(
         originalLetter: letter,
         originalPoint: point,
         effectivePoint,
-        internalMarks,
+        internalMarks: internal.obtained,
+        internalMaxMarks: internal.max,
+        internalPercent: internal.percentage,
         status: 'window_expired',
         statusLabel: 'Window Expired',
         reason: `Retake window (${rules.retakeBatchWindow} batches) exceeded.`,
@@ -372,7 +580,11 @@ export function evaluateCourseForImprovement(
     const triggers: string[] = [];
     if (point === 0) triggers.push('Failed course (0.00)');
     if (lowInternal) {
-      triggers.push(`Internal marks ${internalMarks}/30 < ${rules.minInternalMarks}`);
+      triggers.push(
+        `Internal ${internal.obtained}/${internal.max} (${Math.round(
+          internal.percentage ?? 0
+        )}% < ${rules.minInternalPercent}%)`
+      );
     }
     if (!course.examFormSubmitted) triggers.push('Exam form missing');
 
@@ -385,7 +597,9 @@ export function evaluateCourseForImprovement(
       originalLetter: letter,
       originalPoint: point,
       effectivePoint,
-      internalMarks,
+      internalMarks: internal.obtained,
+      internalMaxMarks: internal.max,
+      internalPercent: internal.percentage,
       status: 'retake_required',
       statusLabel: 'Retake Required',
       reason: `${triggers.join(' · ')}. Eligible for full retake within ${rules.retakeBatchWindow} batches.`,
@@ -403,7 +617,9 @@ export function evaluateCourseForImprovement(
         originalLetter: letter,
         originalPoint: point,
         effectivePoint,
-        internalMarks,
+        internalMarks: internal.obtained,
+        internalMaxMarks: internal.max,
+        internalPercent: internal.percentage,
         status: 'eligible_improvement',
         statusLabel: 'Eligible for Improvement',
         reason: `${semesterName} course GP ${point.toFixed(2)} is below its ${maxPointThreshold.toFixed(2)} improvement max point (within ${rules.improvementBatchWindow}-semester window).`,
@@ -418,7 +634,9 @@ export function evaluateCourseForImprovement(
       originalLetter: letter,
       originalPoint: point,
       effectivePoint,
-      internalMarks,
+      internalMarks: internal.obtained,
+      internalMaxMarks: internal.max,
+      internalPercent: internal.percentage,
       status: 'window_expired',
       statusLabel: 'Window Expired',
       reason: `Grade point ${point.toFixed(2)} < ${maxPointThreshold.toFixed(2)}, but ${batchesElapsed} semesters elapsed (limit: ${rules.improvementBatchWindow}).`,
@@ -434,7 +652,9 @@ export function evaluateCourseForImprovement(
     originalLetter: letter,
     originalPoint: point,
     effectivePoint,
-    internalMarks,
+    internalMarks: internal.obtained,
+    internalMaxMarks: internal.max,
+    internalPercent: internal.percentage,
     status: 'not_needed',
     statusLabel: 'Above Threshold',
     reason: `Grade point ${point.toFixed(2)} meets or exceeds its ${maxPointThreshold.toFixed(2)} improvement max point.`,
@@ -502,12 +722,20 @@ export function calculateSemesterTargetProgress(
       paceQualityPoints += point * course.credits;
       maxQualityPoints += point * course.credits;
     } else {
-      const m1 = course.midterm1;
-      const m2 = course.midterm2;
-      const att = course.attendance;
-      const enteredScore = (m1 ?? 0) + (m2 ?? 0) + (att ?? 0);
-      const enteredMax =
-        (m1 !== null ? 10 : 0) + (m2 !== null ? 10 : 0) + (att !== null ? 10 : 0);
+      const comps = course.assessments ?? [];
+      const maxTotal = getCourseMaxTotalMarks(course);
+      let enteredScore = 0;
+      let enteredMax = 0;
+      let unenteredMax = 0;
+
+      for (const comp of comps) {
+        if (comp.obtainedMarks !== null) {
+          enteredScore += comp.obtainedMarks;
+          enteredMax += comp.maxMarks;
+        } else {
+          unenteredMax += comp.maxMarks;
+        }
+      }
 
       if (enteredMax > 0) {
         const normalizedPct = (enteredScore / enteredMax) * 100;
@@ -516,13 +744,9 @@ export function calculateSemesterTargetProgress(
         paceQualityPoints += paceGrade.point * course.credits;
       }
 
-      const maxPossibleMarks =
-        enteredScore +
-        (m1 === null ? 10 : 0) +
-        (m2 === null ? 10 : 0) +
-        (att === null ? 10 : 0) +
-        70;
-      const maxGrade = getGradeFromMarks(maxPossibleMarks, gradeScale);
+      const maxPossibleMarks = enteredScore + unenteredMax;
+      const maxPossiblePct = maxTotal > 0 ? (maxPossibleMarks / maxTotal) * 100 : 100;
+      const maxGrade = getGradeFromMarks(maxPossiblePct, gradeScale);
       maxQualityPoints += maxGrade.point * course.credits;
     }
   }
@@ -566,4 +790,3 @@ export function calculateSemesterTargetProgress(
     neededRemainingAvgGp,
   };
 }
-

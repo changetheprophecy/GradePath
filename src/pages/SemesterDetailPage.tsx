@@ -5,15 +5,17 @@ import {
   Check,
   Edit3,
   Plus,
+  SlidersHorizontal,
   Trash2,
 } from 'lucide-react';
 import { useAcademic } from '../context/AcademicContext';
 import {
   calculateCumulativeCGPA,
   calculateSemesterGPA,
+  getCourseMaxTotalMarks,
   getCourseOriginalGrade,
 } from '../utils/calculations';
-import { Course, SemesterStatus } from '../types/academic';
+import { AssessmentComponent, Course, SemesterStatus } from '../types/academic';
 import { CourseModal } from '../components/CourseModal';
 import { SemesterModal } from '../components/SemesterModal';
 
@@ -23,11 +25,9 @@ interface CourseDraft {
   credits: string;
 }
 
-type MarkField = 'midterm1' | 'midterm2' | 'attendance' | 'finalExam' | 'total';
-
 interface FocusedMark {
   courseId: string;
-  field: MarkField;
+  key: string; // component id or '__total__'
   value: string;
 }
 
@@ -64,7 +64,6 @@ export function SemesterDetailPage() {
     [courses, semester]
   );
 
-  // Reset inline editing when switching semesters
   useEffect(() => {
     setInlineEditing(false);
     setDrafts({});
@@ -72,7 +71,6 @@ export function SemesterDetailPage() {
     setConfirmDeleteSem(false);
   }, [semester?.id]);
 
-  // Sync missing drafts if courses are added while inline editing is active
   useEffect(() => {
     if (!inlineEditing) return;
     setDrafts((prev) => {
@@ -210,29 +208,27 @@ export function SemesterDetailPage() {
     }));
   };
 
-  const handleComponentFocus = (
-    course: Course,
-    field: 'midterm1' | 'midterm2' | 'attendance' | 'finalExam'
-  ) => {
-    const current = course[field];
+  const handleComponentFocus = (course: Course, comp: AssessmentComponent) => {
     setFocusedMark({
       courseId: course.id,
-      field,
-      value: current !== null ? String(current) : '',
+      key: comp.id,
+      value: comp.obtainedMarks !== null ? String(comp.obtainedMarks) : '',
     });
   };
 
   const handleComponentChange = (
     course: Course,
-    field: 'midterm1' | 'midterm2' | 'attendance' | 'finalExam',
-    raw: string,
-    max: number
+    comp: AssessmentComponent,
+    raw: string
   ) => {
-    setFocusedMark({ courseId: course.id, field, value: raw });
+    setFocusedMark({ courseId: course.id, key: comp.id, value: raw });
     if (raw.trim() === '') {
+      const nextAssessments = course.assessments.map((a) =>
+        a.id === comp.id ? { ...a, obtainedMarks: null } : a
+      );
       updateCourse(
         course.id,
-        { [field]: null, totalMarksOverride: null },
+        { assessments: nextAssessments, totalMarksOverride: null },
         undefined,
         { silentActivity: true }
       );
@@ -240,10 +236,13 @@ export function SemesterDetailPage() {
     }
     const val = Number(raw);
     if (Number.isNaN(val)) return;
-    const clamped = Math.max(0, Math.min(max, val));
+    const clamped = Math.round(Math.max(0, Math.min(comp.maxMarks, val)) * 100) / 100;
+    const nextAssessments = course.assessments.map((a) =>
+      a.id === comp.id ? { ...a, obtainedMarks: clamped } : a
+    );
     updateCourse(
       course.id,
-      { [field]: clamped, totalMarksOverride: null },
+      { assessments: nextAssessments, totalMarksOverride: null },
       undefined,
       { silentActivity: true }
     );
@@ -252,13 +251,13 @@ export function SemesterDetailPage() {
   const handleTotalFocus = (course: Course, currentTotal: number | null) => {
     setFocusedMark({
       courseId: course.id,
-      field: 'total',
+      key: '__total__',
       value: currentTotal !== null ? String(currentTotal) : '',
     });
   };
 
-  const handleTotalChange = (course: Course, raw: string) => {
-    setFocusedMark({ courseId: course.id, field: 'total', value: raw });
+  const handleTotalChange = (course: Course, raw: string, maxTotal: number) => {
+    setFocusedMark({ courseId: course.id, key: '__total__', value: raw });
     if (raw.trim() === '') {
       updateCourse(
         course.id,
@@ -270,7 +269,7 @@ export function SemesterDetailPage() {
     }
     const val = Number(raw);
     if (Number.isNaN(val)) return;
-    const clamped = Math.round(Math.max(0, Math.min(100, val)) * 100) / 100;
+    const clamped = Math.round(Math.max(0, Math.min(maxTotal, val)) * 100) / 100;
     updateCourse(
       course.id,
       { totalMarksOverride: clamped },
@@ -279,24 +278,25 @@ export function SemesterDetailPage() {
     );
   };
 
-  const handleTotalBlur = (course: Course) => {
-    if (focusedMark && focusedMark.courseId === course.id && focusedMark.field === 'total') {
+  const handleTotalBlur = (course: Course, maxTotal: number) => {
+    if (focusedMark && focusedMark.courseId === course.id && focusedMark.key === '__total__') {
       const raw = focusedMark.value.trim();
       if (raw !== '') {
         const val = Number(raw);
         if (!Number.isNaN(val)) {
-          const clamped = Math.round(Math.max(0, Math.min(100, val)) * 100) / 100;
-          if (
-            course.midterm1 !== null &&
-            course.midterm2 !== null &&
-            course.attendance !== null
-          ) {
-            const internal = course.midterm1 + course.midterm2 + course.attendance;
-            const remFinal = Math.round((clamped - internal) * 10) / 10;
-            if (remFinal >= 0 && remFinal <= 70) {
+          const clamped = Math.round(Math.max(0, Math.min(maxTotal, val)) * 100) / 100;
+          const finals = course.assessments.filter((a) => a.kind === 'final');
+          const nonFinals = course.assessments.filter((a) => a.kind !== 'final');
+          if (finals.length === 1 && nonFinals.every((a) => a.obtainedMarks !== null)) {
+            const internalSum = nonFinals.reduce((s, a) => s + (a.obtainedMarks ?? 0), 0);
+            const remFinal = Math.round((clamped - internalSum) * 100) / 100;
+            if (remFinal >= 0 && remFinal <= finals[0].maxMarks) {
+              const nextAssessments = course.assessments.map((a) =>
+                a.id === finals[0].id ? { ...a, obtainedMarks: remFinal } : a
+              );
               updateCourse(
                 course.id,
-                { finalExam: remFinal, totalMarksOverride: null },
+                { assessments: nextAssessments, totalMarksOverride: null },
                 undefined,
                 { silentActivity: true }
               );
@@ -308,19 +308,15 @@ export function SemesterDetailPage() {
     setFocusedMark(null);
   };
 
-  const getMarkInputValue = (
-    course: Course,
-    field: 'midterm1' | 'midterm2' | 'attendance' | 'finalExam'
-  ) => {
-    if (focusedMark && focusedMark.courseId === course.id && focusedMark.field === field) {
+  const getComponentInputValue = (course: Course, comp: AssessmentComponent) => {
+    if (focusedMark && focusedMark.courseId === course.id && focusedMark.key === comp.id) {
       return focusedMark.value;
     }
-    const val = course[field];
-    return val !== null ? String(val) : '';
+    return comp.obtainedMarks !== null ? String(comp.obtainedMarks) : '';
   };
 
   const getTotalInputValue = (course: Course, calculatedTotal: number | null) => {
-    if (focusedMark && focusedMark.courseId === course.id && focusedMark.field === 'total') {
+    if (focusedMark && focusedMark.courseId === course.id && focusedMark.key === '__total__') {
       return focusedMark.value;
     }
     return calculatedTotal !== null ? String(calculatedTotal) : '';
@@ -344,7 +340,7 @@ export function SemesterDetailPage() {
               {semester.name}
             </h2>
             <p className="mt-1 text-xs font-medium text-[#29232D]/70">
-              Edit Mid 1, Mid 2, Attendance, Final, and Total marks directly in the table—GPA and CGPA recalculate live.
+              Edit assessment marks directly or click Edit to customize any course&apos;s mark distribution—GPA and CGPA recalculate live.
             </p>
           </div>
         </div>
@@ -498,7 +494,7 @@ export function SemesterDetailPage() {
               No courses in {semester.name} yet
             </h3>
             <p className="mt-1 text-sm font-medium text-[#29232D]/70">
-              Add your first course to start tracking midterms, attendance, and final exam grades.
+              Add your first course with a custom assessment structure to start tracking grades.
             </p>
             <button
               type="button"
@@ -520,11 +516,8 @@ export function SemesterDetailPage() {
                   <th className="py-3.5 px-4 whitespace-nowrap">Code</th>
                   <th className="py-3.5 px-4">Course Name</th>
                   <th className="py-3.5 px-3 text-right whitespace-nowrap">Credits</th>
-                  <th className="py-3.5 px-2 text-right whitespace-nowrap">Mid 1 (/10)</th>
-                  <th className="py-3.5 px-2 text-right whitespace-nowrap">Mid 2 (/10)</th>
-                  <th className="py-3.5 px-2 text-right whitespace-nowrap">Attend. (/10)</th>
-                  <th className="py-3.5 px-2 text-right whitespace-nowrap">Final (/70)</th>
-                  <th className="py-3.5 px-2 text-right whitespace-nowrap">Total (/100)</th>
+                  <th className="py-3.5 px-3 whitespace-nowrap">Assessment Marks</th>
+                  <th className="py-3.5 px-2 text-right whitespace-nowrap">Total</th>
                   <th className="py-3.5 px-3 text-right whitespace-nowrap">Grade</th>
                   <th className="py-3.5 px-3 text-right whitespace-nowrap">GP</th>
                   <th className="py-3.5 px-4 text-right whitespace-nowrap">Actions</th>
@@ -532,7 +525,8 @@ export function SemesterDetailPage() {
               </thead>
               <tbody className="divide-y-2 divide-[#29232D]/10 text-sm">
                 {semCourses.map((course) => {
-                  const { totalMarks, letter, point } = getCourseOriginalGrade(
+                  const maxTotal = getCourseMaxTotalMarks(course);
+                  const { totalMarks, percentage, letter, point } = getCourseOriginalGrade(
                     course,
                     gradeScale
                   );
@@ -555,7 +549,7 @@ export function SemesterDetailPage() {
                               className="w-28 rounded-lg border-2 border-[#29232D] bg-white px-2.5 py-1.5 font-mono text-xs font-extrabold uppercase text-[#7955A1] focus:outline-none focus:ring-2 focus:ring-[#7955A1]/30"
                             />
                           </td>
-                          <td className="py-2.5 px-3 min-w-[230px]">
+                          <td className="py-2.5 px-3 min-w-[210px]">
                             <input
                               type="text"
                               value={draft?.name ?? course.name}
@@ -616,7 +610,7 @@ export function SemesterDetailPage() {
                           <td className="py-3 px-4 font-mono text-xs font-extrabold text-[#7955A1] whitespace-nowrap">
                             {course.code}
                           </td>
-                          <td className="py-3 px-4 min-w-[180px]">
+                          <td className="py-3 px-4 min-w-[170px]">
                             <div className="font-bold text-[#29232D]">{course.name}</div>
                             {course.improvedGradePoint != null && (
                               <div className="text-[11px] font-bold text-[#7955A1] mt-0.5">
@@ -630,90 +624,78 @@ export function SemesterDetailPage() {
                         </>
                       )}
 
-                      {/* Always-editable Mid 1, Mid 2, Attendance, Final, and Total Marks */}
-                      <td className="py-2.5 px-2 text-right">
-                        <input
-                          type="number"
-                          min="0"
-                          max="10"
-                          step="0.5"
-                          placeholder="—"
-                          value={getMarkInputValue(course, 'midterm1')}
-                          onFocus={() => handleComponentFocus(course, 'midterm1')}
-                          onChange={(e) =>
-                            handleComponentChange(course, 'midterm1', e.target.value, 10)
-                          }
-                          onBlur={() => setFocusedMark(null)}
-                          aria-label={`${course.code} Midterm 1`}
-                          className="w-16 rounded-lg border-2 border-[#29232D]/30 bg-[#F5F3F2] px-2 py-1.5 text-right font-mono text-xs font-bold tabular-nums text-[#29232D] hover:border-[#29232D] focus:border-[#29232D] focus:bg-white focus:outline-none"
-                        />
+                      {/* Dynamic Assessment Component Inputs */}
+                      <td className="py-2.5 px-3 min-w-[320px]">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {course.assessments.map((comp) => (
+                            <label
+                              key={comp.id}
+                              className="inline-flex items-center gap-1 rounded-lg border-2 border-[#29232D]/25 bg-[#F5F3F2] px-2 py-1 focus-within:border-[#29232D] focus-within:bg-white"
+                            >
+                              <span className="text-[10px] font-extrabold text-[#29232D]/80 whitespace-nowrap">
+                                {comp.name}
+                              </span>
+                              <input
+                                type="number"
+                                min="0"
+                                max={comp.maxMarks}
+                                step="0.5"
+                                placeholder="—"
+                                value={getComponentInputValue(course, comp)}
+                                onFocus={() => handleComponentFocus(course, comp)}
+                                onChange={(e) =>
+                                  handleComponentChange(course, comp, e.target.value)
+                                }
+                                onBlur={() => setFocusedMark(null)}
+                                aria-label={`${course.code} ${comp.name}`}
+                                className="w-11 bg-transparent text-right font-mono text-xs font-extrabold tabular-nums text-[#29232D] focus:outline-none"
+                              />
+                              <span className="font-mono text-[10px] font-bold text-[#29232D]/50">
+                                /{comp.maxMarks}
+                              </span>
+                            </label>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingCourse(course);
+                              setCourseModalOpen(true);
+                            }}
+                            title="Configure assessment components"
+                            aria-label={`Configure ${course.code} assessments`}
+                            className="inline-flex items-center gap-1 rounded-lg border border-[#29232D]/40 bg-white px-2 py-1 text-[10px] font-bold text-[#7955A1] hover:border-[#29232D] hover:bg-[#E5D8F3]"
+                          >
+                            <SlidersHorizontal className="h-3 w-3" />
+                          </button>
+                        </div>
                       </td>
-                      <td className="py-2.5 px-2 text-right">
-                        <input
-                          type="number"
-                          min="0"
-                          max="10"
-                          step="0.5"
-                          placeholder="—"
-                          value={getMarkInputValue(course, 'midterm2')}
-                          onFocus={() => handleComponentFocus(course, 'midterm2')}
-                          onChange={(e) =>
-                            handleComponentChange(course, 'midterm2', e.target.value, 10)
-                          }
-                          onBlur={() => setFocusedMark(null)}
-                          aria-label={`${course.code} Midterm 2`}
-                          className="w-16 rounded-lg border-2 border-[#29232D]/30 bg-[#F5F3F2] px-2 py-1.5 text-right font-mono text-xs font-bold tabular-nums text-[#29232D] hover:border-[#29232D] focus:border-[#29232D] focus:bg-white focus:outline-none"
-                        />
-                      </td>
-                      <td className="py-2.5 px-2 text-right">
-                        <input
-                          type="number"
-                          min="0"
-                          max="10"
-                          step="0.5"
-                          placeholder="—"
-                          value={getMarkInputValue(course, 'attendance')}
-                          onFocus={() => handleComponentFocus(course, 'attendance')}
-                          onChange={(e) =>
-                            handleComponentChange(course, 'attendance', e.target.value, 10)
-                          }
-                          onBlur={() => setFocusedMark(null)}
-                          aria-label={`${course.code} Attendance`}
-                          className="w-16 rounded-lg border-2 border-[#29232D]/30 bg-[#F5F3F2] px-2 py-1.5 text-right font-mono text-xs font-bold tabular-nums text-[#29232D] hover:border-[#29232D] focus:border-[#29232D] focus:bg-white focus:outline-none"
-                        />
-                      </td>
-                      <td className="py-2.5 px-2 text-right">
-                        <input
-                          type="number"
-                          min="0"
-                          max="70"
-                          step="0.5"
-                          placeholder="—"
-                          value={getMarkInputValue(course, 'finalExam')}
-                          onFocus={() => handleComponentFocus(course, 'finalExam')}
-                          onChange={(e) =>
-                            handleComponentChange(course, 'finalExam', e.target.value, 70)
-                          }
-                          onBlur={() => setFocusedMark(null)}
-                          aria-label={`${course.code} Final Exam`}
-                          className="w-16 rounded-lg border-2 border-[#29232D]/30 bg-[#F5F3F2] px-2 py-1.5 text-right font-mono text-xs font-bold tabular-nums text-[#29232D] hover:border-[#29232D] focus:border-[#29232D] focus:bg-white focus:outline-none"
-                        />
-                      </td>
-                      <td className="py-2.5 px-2 text-right">
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
-                          step="0.5"
-                          placeholder="—"
-                          value={getTotalInputValue(course, totalMarks)}
-                          onFocus={() => handleTotalFocus(course, totalMarks)}
-                          onChange={(e) => handleTotalChange(course, e.target.value)}
-                          onBlur={() => handleTotalBlur(course)}
-                          aria-label={`${course.code} Total Marks`}
-                          title="Edit Total Marks (/100) directly or via components"
-                          className="w-[68px] rounded-lg border-2 border-[#7955A1]/60 bg-[#FCE2DE]/50 px-2 py-1.5 text-right font-mono text-xs font-extrabold tabular-nums text-[#29232D] hover:border-[#7955A1] focus:border-[#7955A1] focus:bg-white focus:outline-none"
-                        />
+
+                      {/* Total Marks & Percentage */}
+                      <td className="py-2.5 px-2 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            max={maxTotal || undefined}
+                            step="0.5"
+                            placeholder="—"
+                            value={getTotalInputValue(course, totalMarks)}
+                            onFocus={() => handleTotalFocus(course, totalMarks)}
+                            onChange={(e) => handleTotalChange(course, e.target.value, maxTotal)}
+                            onBlur={() => handleTotalBlur(course, maxTotal)}
+                            aria-label={`${course.code} Total Marks`}
+                            title={`Edit Total Marks (/${maxTotal}) directly or via components`}
+                            className="w-14 rounded-lg border-2 border-[#7955A1]/60 bg-[#FCE2DE]/50 px-1.5 py-1 text-right font-mono text-xs font-extrabold tabular-nums text-[#29232D] hover:border-[#7955A1] focus:border-[#7955A1] focus:bg-white focus:outline-none"
+                          />
+                          <span className="font-mono text-[11px] font-bold text-[#29232D]/60">
+                            /{maxTotal}
+                          </span>
+                        </div>
+                        {percentage !== null && (
+                          <div className="text-[10px] font-mono font-bold text-[#7955A1] tabular-nums mt-0.5">
+                            {percentage.toFixed(1)}%
+                          </div>
+                        )}
                       </td>
 
                       <td className="py-3 px-3 text-right font-mono font-extrabold">

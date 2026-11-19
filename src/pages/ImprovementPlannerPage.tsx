@@ -279,16 +279,16 @@ export function ImprovementPlannerPage() {
 
             <div>
               <label className="block text-xs font-bold text-[#29232D] mb-1.5">
-                Min Internal Marks (/30)
+                Min Internal Score (%)
               </label>
               <input
                 type="number"
                 min="0"
-                max="30"
-                value={rules.minInternalMarks}
+                max="100"
+                value={rules.minInternalPercent}
                 onChange={(e) =>
                   updateRules({
-                    minInternalMarks: Math.max(0, Math.min(30, Number(e.target.value) || 0)),
+                    minInternalPercent: Math.max(0, Math.min(100, Number(e.target.value) || 0)),
                   })
                 }
                 className="w-full rounded-xl border-2 border-[#29232D] bg-white px-3 py-2 text-sm font-mono font-bold tabular-nums text-[#29232D]"

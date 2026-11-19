@@ -1,18 +1,23 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowDownRight,
   ArrowRight,
   ArrowUpRight,
   Award,
+  BellRing,
   BookOpen,
   Calculator,
   Calendar,
+  CalendarClock,
   CheckCircle2,
+  ClipboardEdit,
   ClipboardList,
   Plus,
   Target,
   TrendingUp,
+  X,
 } from 'lucide-react';
 import {
   CartesianGrid,
@@ -39,6 +44,7 @@ export function DashboardPage() {
     semesters,
     courses,
     activities,
+    notifications,
     gradeScale,
     rules,
     isDemoData,
@@ -47,6 +53,8 @@ export function DashboardPage() {
     navigateTo,
     addSemester,
     setSemesterTargetGpa,
+    markNotificationRead,
+    dismissNotification,
   } = useAcademic();
 
   const [selectedSemFilter, setSelectedSemFilter] = useState<string>('all');
@@ -258,6 +266,98 @@ export function DashboardPage() {
           </div>
         </div>
       </section>
+
+      {/* Local Academic Alerts Strip (Upcoming Exams & Missing Marks) */}
+      {notifications.length > 0 && (
+        <section
+          aria-label="Local Academic Alerts"
+          className="rounded-[22px] border-2 border-[#29232D] bg-[#FFF4D6] p-4 sm:p-5 shadow-[4px_4px_0_#29232D]"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b-2 border-[#29232D]/15">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border-2 border-[#29232D] bg-[#F6D36B] text-[#29232D]">
+                <BellRing className="h-4 w-4" />
+              </div>
+              <div>
+                <h3 className="font-display text-sm font-extrabold text-[#29232D]">
+                  Local Reminders &amp; Alerts ({notifications.length})
+                </h3>
+                <p className="text-xs font-medium text-[#29232D]/75">
+                  Automatically checks upcoming exam dates and missing midterm, attendance, or final marks.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigateTo('settings')}
+              className="self-start sm:self-auto rounded-lg border-2 border-[#29232D] bg-white px-2.5 py-1 text-xs font-bold text-[#29232D] hover:bg-[#FCE2DE] whitespace-nowrap"
+            >
+              Alert Settings
+            </button>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
+            {notifications.slice(0, 6).map((alert) => {
+              const IconComp =
+                alert.category === 'exam'
+                  ? CalendarClock
+                  : alert.category === 'low_internal'
+                    ? AlertTriangle
+                    : ClipboardEdit;
+
+              return (
+                <div
+                  key={alert.id}
+                  className="flex items-start gap-2.5 rounded-xl border-2 border-[#29232D] bg-white p-3"
+                >
+                  <div
+                    className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[#29232D] ${
+                      alert.category === 'exam'
+                        ? 'bg-[#FCE2DE]'
+                        : alert.severity === 'warning'
+                          ? 'bg-[#F6D36B]'
+                          : 'bg-[#E5D8F3]'
+                    }`}
+                  >
+                    <IconComp className="h-3.5 w-3.5 text-[#29232D]" />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      markNotificationRead(alert.id);
+                      if (alert.targetPage) {
+                        navigateTo(alert.targetPage, alert.targetSemesterId);
+                      }
+                    }}
+                    className="min-w-0 flex-1 text-left group"
+                  >
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="text-xs font-extrabold text-[#29232D] truncate group-hover:text-[#7955A1]">
+                        {alert.title}
+                      </span>
+                      <span className="rounded-md border border-[#29232D]/30 bg-[#F5F3F2] px-1.5 py-0.5 text-[10px] font-bold text-[#29232D] shrink-0">
+                        {alert.time}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] font-medium text-[#29232D]/70 line-clamp-2">
+                      {alert.description}
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => dismissNotification(alert.id)}
+                    className="rounded-md p-0.5 text-[#29232D]/45 hover:bg-[#F8D0CC] hover:text-[#29232D]"
+                    aria-label={`Dismiss ${alert.title}`}
+                    title="Dismiss alert"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* 4 Colorful Overview Metric Cards */}
       <section aria-label="Academic Overview" className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">

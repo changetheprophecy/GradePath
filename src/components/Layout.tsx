@@ -1,10 +1,14 @@
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import {
+  AlertTriangle,
   Bell,
+  BellRing,
   BookOpen,
   Calculator,
+  CalendarClock,
   CheckCheck,
   ChevronRight,
+  ClipboardEdit,
   ClipboardList,
   FolderKanban,
   Globe,
@@ -13,11 +17,12 @@ import {
   Menu,
   Search,
   Settings,
+  SlidersHorizontal,
   TrendingUp,
   User,
   X,
 } from 'lucide-react';
-import { AppPage } from '../types/academic';
+import { AppPage, NotificationItem } from '../types/academic';
 import { useAcademic } from '../context/AcademicContext';
 import { Logo } from './Logo';
 import { Avatar } from './Avatar';
@@ -60,8 +65,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
     courses,
     resources,
     notifications,
+    notificationPrefs,
+    dismissedNotificationCount,
+    toastAlert,
     markNotificationRead,
     markAllNotificationsRead,
+    dismissNotification,
+    restoreDismissedNotifications,
+    dismissToast,
     logout,
   } = useAcademic();
 
@@ -69,6 +80,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [notifFilter, setNotifFilter] = useState<'all' | 'exam' | 'missing'>('all');
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
 
   const searchRef = useRef<HTMLDivElement>(null);
@@ -97,6 +109,34 @@ export function Layout({ children }: { children: React.ReactNode }) {
   );
 
   const unreadCount = notifications.filter((n) => !n.read).length;
+
+  const notifCounts = useMemo(() => {
+    const exam = notifications.filter((n) => n.category === 'exam').length;
+    const missing = notifications.filter(
+      (n) => n.category === 'missing_marks' || n.category === 'low_internal'
+    ).length;
+    return { all: notifications.length, exam, missing };
+  }, [notifications]);
+
+  const filteredNotifications = useMemo(() => {
+    if (notifFilter === 'exam') {
+      return notifications.filter((n) => n.category === 'exam');
+    }
+    if (notifFilter === 'missing') {
+      return notifications.filter(
+        (n) => n.category === 'missing_marks' || n.category === 'low_internal'
+      );
+    }
+    return notifications;
+  }, [notifications, notifFilter]);
+
+  const handleOpenNotification = (n: NotificationItem) => {
+    markNotificationRead(n.id);
+    if (n.targetPage) {
+      navigateTo(n.targetPage, n.targetSemesterId);
+    }
+    setNotifOpen(false);
+  };
 
   const searchResults = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -402,55 +442,185 @@ export function Layout({ children }: { children: React.ReactNode }) {
               </button>
 
               {notifOpen && (
-                <div className="absolute right-0 mt-2 w-80 sm:w-96 rounded-2xl border-2 border-[#29232D] bg-white shadow-[4px_4px_0_#29232D] z-40 overflow-hidden">
+                <div className="absolute right-0 mt-2 w-[336px] sm:w-[410px] rounded-2xl border-2 border-[#29232D] bg-white shadow-[4px_4px_0_#29232D] z-40 overflow-hidden">
                   <div className="flex items-center justify-between border-b-2 border-[#29232D] bg-[#F8D0CC] px-4 py-3">
-                    <span className="font-display text-sm font-bold text-[#29232D]">
-                      Notifications
-                    </span>
-                    {unreadCount > 0 && (
+                    <div className="flex items-center gap-2">
+                      <span className="font-display text-sm font-extrabold text-[#29232D]">
+                        Local Alerts
+                      </span>
+                      {unreadCount > 0 && (
+                        <span className="rounded-lg border border-[#29232D] bg-[#F6D36B] px-1.5 py-0.5 text-[10px] font-extrabold text-[#29232D] tabular-nums">
+                          {unreadCount} unread
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {unreadCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={markAllNotificationsRead}
+                          className="inline-flex items-center gap-1 text-xs font-bold text-[#7955A1] hover:text-[#29232D]"
+                        >
+                          <CheckCheck className="h-3.5 w-3.5" />
+                          Mark all read
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={markAllNotificationsRead}
-                        className="inline-flex items-center gap-1 text-xs font-bold text-[#7955A1] hover:text-[#29232D]"
+                        onClick={() => {
+                          setNotifOpen(false);
+                          navigateTo('settings');
+                        }}
+                        className="rounded-lg border border-[#29232D] bg-white p-1 text-[#29232D] hover:bg-[#FCE2DE]"
+                        aria-label="Notification preferences"
+                        title="Notification preferences"
                       >
-                        <CheckCheck className="h-3.5 w-3.5" />
-                        Mark all read
+                        <SlidersHorizontal className="h-3.5 w-3.5" />
                       </button>
-                    )}
+                    </div>
                   </div>
-                  <div className="divide-y divide-[#29232D]/15 max-h-80 overflow-y-auto">
-                    {notifications.length === 0 ? (
-                      <p className="px-4 py-6 text-center text-xs font-semibold text-[#29232D]/60">
-                        You are all caught up.
-                      </p>
-                    ) : (
-                      notifications.map((n) => (
+
+                  {/* Filter Tabs */}
+                  {notificationPrefs.enabled && (
+                    <div className="flex items-center gap-1.5 border-b-2 border-[#29232D]/15 bg-[#F5F3F2] px-3 py-2">
+                      {(
+                        [
+                          { id: 'all', label: 'All', count: notifCounts.all },
+                          { id: 'exam', label: 'Exams', count: notifCounts.exam },
+                          { id: 'missing', label: 'Missing Marks', count: notifCounts.missing },
+                        ] as const
+                      ).map((tab) => (
                         <button
-                          key={n.id}
+                          key={tab.id}
                           type="button"
-                          onClick={() => {
-                            markNotificationRead(n.id);
-                            if (n.targetPage) navigateTo(n.targetPage);
-                            setNotifOpen(false);
-                          }}
-                          className={`w-full text-left px-4 py-3 hover:bg-[#FCE2DE]/50 transition-colors ${
-                            !n.read ? 'bg-[#FCE2DE]/40' : ''
+                          onClick={() => setNotifFilter(tab.id)}
+                          className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold transition-colors ${
+                            notifFilter === tab.id
+                              ? 'border-[#29232D] bg-[#7955A1] text-white'
+                              : 'border-transparent bg-white text-[#29232D]/80 hover:border-[#29232D]/30'
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-bold text-[#29232D]">
-                              {n.title}
-                            </span>
-                            <span className="text-[11px] font-semibold text-[#7955A1] shrink-0">
-                              {n.time}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-xs text-[#29232D]/75 leading-relaxed">
-                            {n.description}
-                          </p>
+                          {tab.label} ({tab.count})
                         </button>
-                      ))
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="divide-y divide-[#29232D]/15 max-h-80 overflow-y-auto">
+                    {!notificationPrefs.enabled ? (
+                      <div className="px-4 py-6 text-center">
+                        <p className="text-xs font-bold text-[#29232D]">
+                          Local alerts are paused.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNotifOpen(false);
+                            navigateTo('settings');
+                          }}
+                          className="mt-2 text-xs font-extrabold text-[#7955A1] hover:underline"
+                        >
+                          Re-enable in Settings →
+                        </button>
+                      </div>
+                    ) : filteredNotifications.length === 0 ? (
+                      <p className="px-4 py-6 text-center text-xs font-semibold text-[#29232D]/60">
+                        No {notifFilter === 'exam' ? 'upcoming exam ' : notifFilter === 'missing' ? 'missing-mark ' : ''}alerts right now. You are all caught up!
+                      </p>
+                    ) : (
+                      filteredNotifications.map((n) => {
+                        const IconComp =
+                          n.category === 'exam'
+                            ? CalendarClock
+                            : n.category === 'low_internal'
+                              ? AlertTriangle
+                              : ClipboardEdit;
+                        const badgeBg =
+                          n.severity === 'warning'
+                            ? 'bg-[#F6D36B]'
+                            : n.category === 'exam'
+                              ? 'bg-[#FCE2DE]'
+                              : 'bg-[#E5D8F3]';
+
+                        return (
+                          <div
+                            key={n.id}
+                            className={`group flex items-start gap-2.5 px-3.5 py-3 hover:bg-[#FCE2DE]/45 transition-colors ${
+                              !n.read ? 'bg-[#FCE2DE]/35' : ''
+                            }`}
+                          >
+                            <div
+                              className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border-2 border-[#29232D] ${badgeBg} text-[#29232D]`}
+                            >
+                              <IconComp className="h-3.5 w-3.5" />
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleOpenNotification(n)}
+                              className="min-w-0 flex-1 text-left"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-xs font-extrabold text-[#29232D] truncate">
+                                  {n.title}
+                                </span>
+                                <span
+                                  className={`rounded-md border border-[#29232D]/30 px-1.5 py-0.5 text-[10px] font-extrabold shrink-0 ${
+                                    n.severity === 'warning'
+                                      ? 'bg-[#FFF4D6] text-[#92400E]'
+                                      : 'bg-[#E5D8F3] text-[#29232D]'
+                                  }`}
+                                >
+                                  {n.time}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-xs text-[#29232D]/75 leading-relaxed">
+                                {n.description}
+                              </p>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                dismissNotification(n.id);
+                              }}
+                              className="mt-0.5 rounded-lg p-1 text-[#29232D]/45 hover:bg-[#F8D0CC] hover:text-[#29232D] transition-colors shrink-0"
+                              aria-label={`Dismiss ${n.title}`}
+                              title="Dismiss alert"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })
                     )}
+                  </div>
+
+                  <div className="flex items-center justify-between border-t-2 border-[#29232D]/15 bg-[#F5F3F2] px-3.5 py-2 text-[11px]">
+                    {dismissedNotificationCount > 0 ? (
+                      <button
+                        type="button"
+                        onClick={restoreDismissedNotifications}
+                        className="font-bold text-[#7955A1] hover:underline"
+                      >
+                        Restore {dismissedNotificationCount} dismissed
+                      </button>
+                    ) : (
+                      <span className="font-semibold text-[#29232D]/60">
+                        Live local reminders
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNotifOpen(false);
+                        navigateTo('settings');
+                      }}
+                      className="font-bold text-[#29232D] hover:text-[#7955A1]"
+                    >
+                      Preferences →
+                    </button>
                   </div>
                 </div>
               )}
@@ -525,6 +695,72 @@ export function Layout({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </div>
+
+      {/* Floating In-App Local Alert Toast */}
+      {toastAlert && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-5 right-5 z-40 w-[340px] max-w-[calc(100vw-2.5rem)] rounded-2xl border-2 border-[#29232D] bg-white p-4 shadow-[4px_4px_0_#29232D]"
+        >
+          <div className="flex items-start gap-3">
+            <div
+              className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border-2 border-[#29232D] ${
+                toastAlert.severity === 'warning' ? 'bg-[#F6D36B]' : 'bg-[#FCE2DE]'
+              } text-[#29232D]`}
+            >
+              <BellRing className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="font-display text-xs font-extrabold text-[#29232D]">
+                {toastAlert.title}
+              </p>
+              <p className="mt-1 text-xs font-medium text-[#29232D]/75 leading-relaxed">
+                {toastAlert.description}
+              </p>
+              <div className="mt-3 flex items-center gap-2">
+                {toastAlert.targetPage && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigateTo(toastAlert.targetPage!, toastAlert.targetSemesterId);
+                      dismissToast();
+                    }}
+                    className="rounded-lg border-2 border-[#29232D] bg-[#7955A1] px-2.5 py-1 text-[11px] font-bold text-white hover:bg-[#65448B]"
+                  >
+                    Review Course
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNotifOpen(true);
+                    dismissToast();
+                  }}
+                  className="rounded-lg border-2 border-[#29232D] bg-[#FCE2DE] px-2.5 py-1 text-[11px] font-bold text-[#29232D] hover:bg-[#F8D0CC]"
+                >
+                  Open Alerts
+                </button>
+                <button
+                  type="button"
+                  onClick={dismissToast}
+                  className="ml-auto text-[11px] font-bold text-[#29232D]/60 hover:text-[#29232D]"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={dismissToast}
+              className="rounded-lg p-1 text-[#29232D]/50 hover:bg-[#F5F3F2] hover:text-[#29232D]"
+              aria-label="Close alert toast"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

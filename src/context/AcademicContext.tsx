@@ -1,12 +1,14 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AcademicRules,
   ActivityItem,
   AppPage,
+  AssessmentTemplateComponent,
   AuthView,
   Course,
   GradeScaleEntry,
   NotificationItem,
+  NotificationPreferences,
   Semester,
   StudentProfile,
   StudyResource,
@@ -15,13 +17,20 @@ import {
   calculateCumulativeCGPA,
   calculateSemesterGPA,
   DEFAULT_ACADEMIC_RULES,
+  DEFAULT_ASSESSMENT_TEMPLATE,
   DEFAULT_GRADE_SCALE,
   getLetterFromPoint,
+  migrateCourseAssessments,
 } from '../utils/calculations';
+import {
+  DEFAULT_NOTIFICATION_PREFS,
+  generateLocalNotifications,
+  getBrowserNotificationStatus,
+  sendBrowserNotification,
+} from '../utils/notifications';
 import {
   DEMO_ACTIVITIES,
   DEMO_COURSES,
-  DEMO_NOTIFICATIONS,
   DEMO_PROFILE,
   DEMO_RESOURCES,
   DEMO_SEMESTERS,
@@ -38,7 +47,11 @@ interface PersistedWorkspace {
   courses: Course[];
   resources: StudyResource[];
   activities: ActivityItem[];
-  notifications: NotificationItem[];
+  readNotificationIds: string[];
+  dismissedNotificationIds: string[];
+  notifiedBrowserIds: string[];
+  notificationPrefs: NotificationPreferences;
+  defaultAssessments: AssessmentTemplateComponent[];
   rules: AcademicRules;
   gradeScale: GradeScaleEntry[];
 }
@@ -56,20 +69,58 @@ function loadInitialWorkspace(): PersistedWorkspace {
             ? { ...rawProfile, avatarUrl: undefined }
             : rawProfile;
 
+        const migratedCourses: Course[] = parsed.courses.map((c) => {
+          const rawC = c as Partial<Course> & Record<string, unknown>;
+          return {
+            ...(c as Course),
+            assessments: migrateCourseAssessments(rawC),
+          };
+        });
+
+        const rawRules = parsed.rules as (Partial<AcademicRules> & { minInternalMarks?: number }) | undefined;
+        const migratedRules: AcademicRules = {
+          ...DEFAULT_ACADEMIC_RULES,
+          ...(rawRules ?? {}),
+          minInternalPercent:
+            typeof rawRules?.minInternalPercent === 'number'
+              ? rawRules.minInternalPercent
+              : typeof rawRules?.minInternalMarks === 'number'
+                ? Math.round((rawRules.minInternalMarks / 30) * 100)
+                : DEFAULT_ACADEMIC_RULES.minInternalPercent,
+        };
+
+        const defaultAssessments =
+          Array.isArray(parsed.defaultAssessments) && parsed.defaultAssessments.length > 0
+            ? parsed.defaultAssessments
+            : DEFAULT_ASSESSMENT_TEMPLATE;
+
         return {
           isAuthenticated: parsed.isAuthenticated ?? true,
           isDemoData: parsed.isDemoData ?? true,
           avatarChoiceSet: parsed.avatarChoiceSet ?? true,
           profile,
           semesters: parsed.semesters,
-          courses: parsed.courses,
+          courses: migratedCourses,
           resources: parsed.resources ?? DEMO_RESOURCES,
           activities: (parsed.activities ?? DEMO_ACTIVITIES).map((a) => ({
             ...a,
             detail: a.detail.replace(' (Fall 2026)', ''),
           })),
-          notifications: parsed.notifications ?? DEMO_NOTIFICATIONS,
-          rules: parsed.rules ?? DEFAULT_ACADEMIC_RULES,
+          readNotificationIds: Array.isArray(parsed.readNotificationIds)
+            ? parsed.readNotificationIds
+            : [],
+          dismissedNotificationIds: Array.isArray(parsed.dismissedNotificationIds)
+            ? parsed.dismissedNotificationIds
+            : [],
+          notifiedBrowserIds: Array.isArray(parsed.notifiedBrowserIds)
+            ? parsed.notifiedBrowserIds
+            : [],
+          notificationPrefs: {
+            ...DEFAULT_NOTIFICATION_PREFS,
+            ...(parsed.notificationPrefs ?? {}),
+          },
+          defaultAssessments,
+          rules: migratedRules,
           gradeScale: parsed.gradeScale ?? DEFAULT_GRADE_SCALE,
         };
       }
@@ -87,13 +138,26 @@ function loadInitialWorkspace(): PersistedWorkspace {
     courses: DEMO_COURSES,
     resources: DEMO_RESOURCES,
     activities: DEMO_ACTIVITIES,
-    notifications: DEMO_NOTIFICATIONS,
+    readNotificationIds: [],
+    dismissedNotificationIds: [],
+    notifiedBrowserIds: [],
+    notificationPrefs: DEFAULT_NOTIFICATION_PREFS,
+    defaultAssessments: DEFAULT_ASSESSMENT_TEMPLATE,
     rules: DEFAULT_ACADEMIC_RULES,
     gradeScale: DEFAULT_GRADE_SCALE,
   };
 }
 
 export type SurfaceMode = 'landing' | 'auth' | 'dashboard';
+
+export interface LocalToastAlert {
+  id: string;
+  title: string;
+  description: string;
+  severity: 'info' | 'warning' | 'success';
+  targetPage?: AppPage;
+  targetSemesterId?: string;
+}
 
 interface AcademicContextValue {
   surfaceMode: SurfaceMode;
@@ -115,6 +179,10 @@ interface AcademicContextValue {
   resources: StudyResource[];
   activities: ActivityItem[];
   notifications: NotificationItem[];
+  notificationPrefs: NotificationPreferences;
+  dismissedNotificationCount: number;
+  toastAlert: LocalToastAlert | null;
+  defaultAssessments: AssessmentTemplateComponent[];
   rules: AcademicRules;
   gradeScale: GradeScaleEntry[];
 
@@ -153,6 +221,8 @@ interface AcademicContextValue {
   // Library CRUD
   addResource: (resource: Omit<StudyResource, 'id' | 'createdAt'>) => void;
   toggleBookmark: (id: string) => void;
+  toggleResourceCompleted: (id: string) => void;
+  markResourceReviewed: (id: string) => void;
   deleteResource: (id: string) => void;
 
   // Settings & Rules
@@ -160,10 +230,17 @@ interface AcademicContextValue {
   updateRules: (patch: Partial<AcademicRules>) => void;
   updateGradeScale: (scale: GradeScaleEntry[]) => void;
   resetGradeScale: () => void;
+  updateDefaultAssessments: (template: AssessmentTemplateComponent[]) => void;
+  resetDefaultAssessments: () => void;
 
   // Notifications
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
+  dismissNotification: (id: string) => void;
+  restoreDismissedNotifications: () => void;
+  updateNotificationPrefs: (patch: Partial<NotificationPreferences>) => void;
+  dismissToast: () => void;
+  triggerTestLocalNotification: () => { ok: boolean; message: string };
 
   // Workspace resets
   resetToDemoData: () => void;
@@ -178,6 +255,9 @@ export function AcademicProvider({ children }: { children: React.ReactNode }) {
   const [activePage, setActivePage] = useState<AppPage>('dashboard');
   const [selectedSemesterId, setSelectedSemesterId] = useState<string | null>(null);
   const [authView, setAuthView] = useState<AuthView>('login');
+  const [clockTick, setClockTick] = useState<number>(() => Date.now());
+  const [toastAlert, setToastAlert] = useState<LocalToastAlert | null>(null);
+  const shownSessionToastRef = useRef(false);
 
   const openLanding = () => {
     setSurfaceMode('landing');
@@ -198,12 +278,108 @@ export function AcademicProvider({ children }: { children: React.ReactNode }) {
   };
 
   useEffect(() => {
+    const id = window.setInterval(() => setClockTick(Date.now()), 60000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(workspace));
     } catch {
       // Ignore storage quota errors
     }
   }, [workspace]);
+
+  const notifications = useMemo(
+    () =>
+      generateLocalNotifications({
+        courses: workspace.courses,
+        semesters: workspace.semesters,
+        rules: workspace.rules,
+        prefs: workspace.notificationPrefs,
+        readIds: workspace.readNotificationIds,
+        dismissedIds: workspace.dismissedNotificationIds,
+        now: new Date(clockTick),
+      }),
+    [
+      workspace.courses,
+      workspace.semesters,
+      workspace.rules,
+      workspace.notificationPrefs,
+      workspace.readNotificationIds,
+      workspace.dismissedNotificationIds,
+      clockTick,
+    ]
+  );
+
+  // Trigger a concise local summary toast on entering dashboard when unread alerts exist
+  useEffect(() => {
+    if (surfaceMode !== 'dashboard' || shownSessionToastRef.current) return;
+    if (!workspace.notificationPrefs.enabled) return;
+
+    const unread = notifications.filter((n) => !n.read);
+    if (unread.length === 0) return;
+
+    shownSessionToastRef.current = true;
+    const examCount = unread.filter((n) => n.category === 'exam').length;
+    const missingCount = unread.filter(
+      (n) => n.category === 'missing_marks' || n.category === 'low_internal'
+    ).length;
+
+    const parts: string[] = [];
+    if (examCount > 0) parts.push(`${examCount} upcoming exam${examCount > 1 ? 's' : ''}`);
+    if (missingCount > 0) parts.push(`${missingCount} missing-mark alert${missingCount > 1 ? 's' : ''}`);
+
+    const firstTarget = unread[0];
+    setToastAlert({
+      id: `session-summary-${Date.now()}`,
+      title: parts.length > 0 ? `Local Academic Alerts: ${parts.join(' & ')}` : firstTarget.title,
+      description:
+        unread.length === 1
+          ? firstTarget.description
+          : `Next up: ${firstTarget.title} (${firstTarget.time}).`,
+      severity: unread.some((n) => n.severity === 'warning') ? 'warning' : 'info',
+      targetPage: firstTarget.targetPage,
+      targetSemesterId: firstTarget.targetSemesterId,
+    });
+  }, [surfaceMode, notifications, workspace.notificationPrefs.enabled]);
+
+  // Dispatch native browser Notification for new urgent unread alerts when enabled & permitted
+  useEffect(() => {
+    if (
+      !workspace.notificationPrefs.enabled ||
+      !workspace.notificationPrefs.browserNotificationsEnabled ||
+      getBrowserNotificationStatus() !== 'granted'
+    ) {
+      return;
+    }
+
+    const notifiedSet = new Set(workspace.notifiedBrowserIds);
+    const pendingUrgent = notifications.filter(
+      (n) => !n.read && n.urgent && !notifiedSet.has(n.id)
+    );
+
+    if (pendingUrgent.length === 0) return;
+
+    const dispatchedIds: string[] = [];
+    for (const item of pendingUrgent.slice(0, 3)) {
+      if (sendBrowserNotification(item.title, `${item.time} · ${item.description}`, item.id)) {
+        dispatchedIds.push(item.id);
+      }
+    }
+
+    if (dispatchedIds.length > 0) {
+      setWorkspace((prev) => ({
+        ...prev,
+        notifiedBrowserIds: Array.from(new Set([...prev.notifiedBrowserIds, ...dispatchedIds])),
+      }));
+    }
+  }, [
+    notifications,
+    workspace.notificationPrefs.enabled,
+    workspace.notificationPrefs.browserNotificationsEnabled,
+    workspace.notifiedBrowserIds,
+  ]);
 
   const navigateTo = (page: AppPage, semesterId?: string | null) => {
     setActivePage(page);
@@ -390,12 +566,14 @@ export function AcademicProvider({ children }: { children: React.ReactNode }) {
       const updated = nextCourses.find((c) => c.id === id);
       const nextCgpa = calculateCumulativeCGPA(nextCourses, prev.gradeScale, prev.rules).cgpa;
       const isMetadataEdit =
-        patch.code !== undefined ||
-        patch.name !== undefined ||
-        patch.credits !== undefined ||
-        patch.semesterId !== undefined ||
-        patch.examFormSubmitted !== undefined ||
-        patch.upcomingExamDate !== undefined;
+        patch.assessments === undefined &&
+        patch.totalMarksOverride === undefined &&
+        (patch.code !== undefined ||
+          patch.name !== undefined ||
+          patch.credits !== undefined ||
+          patch.semesterId !== undefined ||
+          patch.examFormSubmitted !== undefined ||
+          patch.upcomingExamDate !== undefined);
       const defaultTitle = isMetadataEdit
         ? `Course updated: ${updated?.code ?? 'course'}`
         : `Marks updated for ${updated?.name ?? 'course'}`;
@@ -490,6 +668,61 @@ export function AcademicProvider({ children }: { children: React.ReactNode }) {
     }));
   };
 
+  const toggleResourceCompleted = (id: string) => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    setWorkspace((prev) => {
+      const target = prev.resources.find((r) => r.id === id);
+      if (!target) return prev;
+      const nextCompleted = !target.completed;
+      return {
+        ...prev,
+        resources: prev.resources.map((r) =>
+          r.id === id
+            ? {
+                ...r,
+                completed: nextCompleted,
+                reviewedAt: nextCompleted ? todayStr : undefined,
+              }
+            : r
+        ),
+        activities: nextCompleted
+          ? prependActivity(
+              prev.activities,
+              `Reviewed ${target.category} topic`,
+              `${target.title} (${target.courseCode || 'General'}) marked completed.`,
+              'library'
+            )
+          : prev.activities,
+      };
+    });
+  };
+
+  const markResourceReviewed = (id: string) => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    setWorkspace((prev) => {
+      const target = prev.resources.find((r) => r.id === id);
+      if (!target || target.completed) return prev;
+      return {
+        ...prev,
+        resources: prev.resources.map((r) =>
+          r.id === id
+            ? {
+                ...r,
+                completed: true,
+                reviewedAt: todayStr,
+              }
+            : r
+        ),
+        activities: prependActivity(
+          prev.activities,
+          `Reviewed ${target.category} topic`,
+          `${target.title} (${target.courseCode || 'General'}) opened and marked reviewed.`,
+          'library'
+        ),
+      };
+    });
+  };
+
   const deleteResource = (id: string) => {
     setWorkspace((prev) => ({
       ...prev,
@@ -532,21 +765,103 @@ export function AcademicProvider({ children }: { children: React.ReactNode }) {
     }));
   };
 
+  const updateDefaultAssessments = (template: AssessmentTemplateComponent[]) => {
+    setWorkspace((prev) => ({
+      ...prev,
+      defaultAssessments: template.length > 0 ? template : DEFAULT_ASSESSMENT_TEMPLATE,
+    }));
+  };
+
+  const resetDefaultAssessments = () => {
+    setWorkspace((prev) => ({
+      ...prev,
+      defaultAssessments: DEFAULT_ASSESSMENT_TEMPLATE,
+    }));
+  };
+
   const markNotificationRead = (id: string) => {
     setWorkspace((prev) => ({
       ...prev,
-      notifications: prev.notifications.map((n) => (n.id === id ? { ...n, read: true } : n)),
+      readNotificationIds: prev.readNotificationIds.includes(id)
+        ? prev.readNotificationIds
+        : [...prev.readNotificationIds, id],
     }));
   };
 
   const markAllNotificationsRead = () => {
+    const activeIds = notifications.map((n) => n.id);
     setWorkspace((prev) => ({
       ...prev,
-      notifications: prev.notifications.map((n) => ({ ...n, read: true })),
+      readNotificationIds: Array.from(new Set([...prev.readNotificationIds, ...activeIds])),
     }));
   };
 
+  const dismissNotification = (id: string) => {
+    setWorkspace((prev) => ({
+      ...prev,
+      dismissedNotificationIds: prev.dismissedNotificationIds.includes(id)
+        ? prev.dismissedNotificationIds
+        : [...prev.dismissedNotificationIds, id],
+    }));
+  };
+
+  const restoreDismissedNotifications = () => {
+    setWorkspace((prev) => ({
+      ...prev,
+      dismissedNotificationIds: [],
+    }));
+  };
+
+  const updateNotificationPrefs = (patch: Partial<NotificationPreferences>) => {
+    setWorkspace((prev) => ({
+      ...prev,
+      notificationPrefs: { ...prev.notificationPrefs, ...patch },
+    }));
+  };
+
+  const dismissToast = () => {
+    setToastAlert(null);
+  };
+
+  const triggerTestLocalNotification = (): { ok: boolean; message: string } => {
+    const firstAlert = notifications[0];
+    const title = firstAlert
+      ? firstAlert.title
+      : 'GradePath Local Alerts Active';
+    const description = firstAlert
+      ? `${firstAlert.time} · ${firstAlert.description}`
+      : 'Upcoming exam dates and missing course marks will trigger alerts automatically.';
+
+    setToastAlert({
+      id: `test-toast-${Date.now()}`,
+      title,
+      description,
+      severity: firstAlert?.severity ?? 'info',
+      targetPage: firstAlert?.targetPage ?? 'marks',
+      targetSemesterId: firstAlert?.targetSemesterId,
+    });
+
+    if (
+      workspace.notificationPrefs.browserNotificationsEnabled &&
+      getBrowserNotificationStatus() === 'granted'
+    ) {
+      const sent = sendBrowserNotification(title, description, `test-${Date.now()}`);
+      if (sent) {
+        return {
+          ok: true,
+          message: 'Test alert sent to both browser notifications and the in-app banner.',
+        };
+      }
+    }
+
+    return {
+      ok: true,
+      message: 'In-app local alert banner triggered.',
+    };
+  };
+
   const resetToDemoData = () => {
+    shownSessionToastRef.current = false;
     setWorkspace((prev) => ({
       ...prev,
       isDemoData: true,
@@ -555,7 +870,11 @@ export function AcademicProvider({ children }: { children: React.ReactNode }) {
       courses: DEMO_COURSES,
       resources: DEMO_RESOURCES,
       activities: DEMO_ACTIVITIES,
-      notifications: DEMO_NOTIFICATIONS,
+      readNotificationIds: [],
+      dismissedNotificationIds: [],
+      notifiedBrowserIds: [],
+      notificationPrefs: DEFAULT_NOTIFICATION_PREFS,
+      defaultAssessments: DEFAULT_ASSESSMENT_TEMPLATE,
       rules: DEFAULT_ACADEMIC_RULES,
       gradeScale: DEFAULT_GRADE_SCALE,
     }));
@@ -563,6 +882,7 @@ export function AcademicProvider({ children }: { children: React.ReactNode }) {
   };
 
   const clearAllData = () => {
+    setToastAlert(null);
     setWorkspace((prev) => ({
       ...prev,
       isDemoData: false,
@@ -570,7 +890,9 @@ export function AcademicProvider({ children }: { children: React.ReactNode }) {
       courses: [],
       resources: [],
       activities: [],
-      notifications: [],
+      readNotificationIds: [],
+      dismissedNotificationIds: [],
+      notifiedBrowserIds: [],
     }));
   };
 
@@ -594,7 +916,11 @@ export function AcademicProvider({ children }: { children: React.ReactNode }) {
         courses: workspace.courses,
         resources: workspace.resources,
         activities: workspace.activities,
-        notifications: workspace.notifications,
+        notifications,
+        notificationPrefs: workspace.notificationPrefs,
+        dismissedNotificationCount: workspace.dismissedNotificationIds.length,
+        toastAlert,
+        defaultAssessments: workspace.defaultAssessments,
         rules: workspace.rules,
         gradeScale: workspace.gradeScale,
         cgpaSummary,
@@ -612,13 +938,22 @@ export function AcademicProvider({ children }: { children: React.ReactNode }) {
         applyImprovementToCourse,
         addResource,
         toggleBookmark,
+        toggleResourceCompleted,
+        markResourceReviewed,
         deleteResource,
         updateProfile,
         updateRules,
         updateGradeScale,
         resetGradeScale,
+        updateDefaultAssessments,
+        resetDefaultAssessments,
         markNotificationRead,
         markAllNotificationsRead,
+        dismissNotification,
+        restoreDismissedNotifications,
+        updateNotificationPrefs,
+        dismissToast,
+        triggerTestLocalNotification,
         resetToDemoData,
         clearAllData,
       }}

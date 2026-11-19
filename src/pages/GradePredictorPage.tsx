@@ -20,16 +20,30 @@ import { useAcademic } from '../context/AcademicContext';
 import {
   calculateCumulativeCGPA,
   calculateSemesterGPA,
+  getCourseInternalSummary,
+  getCourseMaxTotalMarks,
   getGradeFromMarks,
 } from '../utils/calculations';
+import { AssessmentComponent } from '../types/academic';
 
-interface FinalScenario {
+interface ScenarioRowConfig {
   id: string;
   label: string;
-  finalMarks: number;
+  targetMarks: number;
 }
 
 const SCENARIO_COLORS = ['#75B9DF', '#F29A9C', '#7955A1', '#A7D9AE', '#F6D36B', '#A88BC5'];
+
+function buildInitialDraftMarks(assessments: AssessmentComponent[]): Record<string, number> {
+  const map: Record<string, number> = {};
+  for (const comp of assessments) {
+    map[comp.id] =
+      comp.obtainedMarks !== null
+        ? comp.obtainedMarks
+        : Math.round(comp.maxMarks * 0.75 * 2) / 2;
+  }
+  return map;
+}
 
 export function GradePredictorPage() {
   const {
@@ -72,32 +86,84 @@ export function GradePredictorPage() {
     [semesterCourses, selectedCourseId]
   );
 
-  const [mid1, setMid1] = useState<number>(8);
-  const [mid2, setMid2] = useState<number>(8);
-  const [attendance, setAttendance] = useState<number>(9);
-  const [finalExam, setFinalExam] = useState<number>(50);
+  const [draftMarks, setDraftMarks] = useState<Record<string, number>>(() =>
+    activeCourse ? buildInitialDraftMarks(activeCourse.assessments) : {}
+  );
   const [savedNotice, setSavedNotice] = useState(false);
 
-  const [scenarios, setScenarios] = useState<FinalScenario[]>([
-    { id: 'sc-1', label: 'Conservative', finalMarks: 40 },
-    { id: 'sc-2', label: 'Target', finalMarks: 52 },
-    { id: 'sc-3', label: 'Stretch', finalMarks: 60 },
-  ]);
-
-  // Sync predictor sliders when switching courses
-  useEffect(() => {
-    if (activeCourse) {
-      setMid1(activeCourse.midterm1 ?? 7);
-      setMid2(activeCourse.midterm2 ?? 7);
-      setAttendance(activeCourse.attendance ?? 8);
-      setFinalExam(activeCourse.finalExam ?? 50);
-      setSavedNotice(false);
-    }
+  // Identify the primary scenario assessment (prefer 'final' exam component, fallback to last assessment)
+  const scenarioComp = useMemo(() => {
+    if (!activeCourse || activeCourse.assessments.length === 0) return null;
+    return (
+      activeCourse.assessments.find((a) => a.kind === 'final') ??
+      activeCourse.assessments[activeCourse.assessments.length - 1]
+    );
   }, [activeCourse]);
 
-  const internalTotal = Math.round((mid1 + mid2 + attendance) * 10) / 10;
-  const predictedTotal = Math.round((internalTotal + finalExam) * 10) / 10;
-  const predictedGrade = getGradeFromMarks(predictedTotal, gradeScale);
+  const [scenarios, setScenarios] = useState<ScenarioRowConfig[]>([
+    { id: 'sc-1', label: 'Conservative', targetMarks: 40 },
+    { id: 'sc-2', label: 'Target', targetMarks: 52 },
+    { id: 'sc-3', label: 'Stretch', targetMarks: 60 },
+  ]);
+
+  // Sync draft marks and scenario scale whenever the active course changes
+  useEffect(() => {
+    if (activeCourse) {
+      setDraftMarks(buildInitialDraftMarks(activeCourse.assessments));
+      setSavedNotice(false);
+      const primary =
+        activeCourse.assessments.find((a) => a.kind === 'final') ??
+        activeCourse.assessments[activeCourse.assessments.length - 1];
+      if (primary) {
+        const max = primary.maxMarks;
+        setScenarios([
+          { id: 'sc-1', label: 'Conservative', targetMarks: Math.round(max * 0.6 * 2) / 2 },
+          { id: 'sc-2', label: 'Target', targetMarks: Math.round(max * 0.75 * 2) / 2 },
+          { id: 'sc-3', label: 'Stretch', targetMarks: Math.round(max * 0.88 * 2) / 2 },
+        ]);
+      }
+    }
+  }, [activeCourse?.id, activeCourse?.assessments.length]);
+
+  const simulatedAssessments = useMemo(() => {
+    if (!activeCourse) return [];
+    return activeCourse.assessments.map((comp) => ({
+      ...comp,
+      obtainedMarks:
+        draftMarks[comp.id] !== undefined
+          ? Math.max(0, Math.min(comp.maxMarks, draftMarks[comp.id]))
+          : comp.obtainedMarks ?? 0,
+    }));
+  }, [activeCourse, draftMarks]);
+
+  const maxTotalMarks = useMemo(
+    () => (activeCourse ? getCourseMaxTotalMarks(activeCourse) : 100),
+    [activeCourse]
+  );
+
+  const predictedTotal = useMemo(() => {
+    return Math.round(
+      simulatedAssessments.reduce((sum, a) => sum + (a.obtainedMarks ?? 0), 0) * 100
+    ) / 100;
+  }, [simulatedAssessments]);
+
+  const predictedPercentage = useMemo(() => {
+    if (maxTotalMarks <= 0) return 0;
+    return Math.round((predictedTotal / maxTotalMarks) * 10000) / 100;
+  }, [predictedTotal, maxTotalMarks]);
+
+  const predictedGrade = getGradeFromMarks(predictedPercentage, gradeScale);
+
+  const internalSummary = useMemo(
+    () => getCourseInternalSummary({ assessments: simulatedAssessments }),
+    [simulatedAssessments]
+  );
+
+  const distributionFormula = useMemo(() => {
+    if (!activeCourse || activeCourse.assessments.length === 0) return '—';
+    const parts = activeCourse.assessments.map((a) => a.maxMarks);
+    return `${parts.join(' + ')} = ${maxTotalMarks}`;
+  }, [activeCourse, maxTotalMarks]);
 
   const baselineSemStats = useMemo(
     () => calculateSemesterGPA(semesterCourses, gradeScale),
@@ -118,10 +184,8 @@ export function GradePredictorPage() {
       c.id === activeCourse.id
         ? {
             ...c,
-            midterm1: mid1,
-            midterm2: mid2,
-            attendance,
-            finalExam,
+            assessments: simulatedAssessments,
+            totalMarksOverride: null,
           }
         : c
     );
@@ -136,30 +200,39 @@ export function GradePredictorPage() {
   }, [
     activeCourse,
     semesterCourses,
+    simulatedAssessments,
     courses,
     gradeScale,
     rules,
-    mid1,
-    mid2,
-    attendance,
-    finalExam,
     predictedGrade.point,
     baselineCgpa.cgpa,
   ]);
 
+  const otherMarksSum = useMemo(() => {
+    if (!scenarioComp) return predictedTotal;
+    return Math.round(
+      simulatedAssessments
+        .filter((a) => a.id !== scenarioComp.id)
+        .reduce((sum, a) => sum + (a.obtainedMarks ?? 0), 0) * 100
+    ) / 100;
+  }, [simulatedAssessments, scenarioComp, predictedTotal]);
+
   const scenarioRows = useMemo(() => {
-    if (!activeCourse) return [];
+    if (!activeCourse || !scenarioComp) return [];
     return scenarios.map((sc) => {
-      const total = Math.round((internalTotal + sc.finalMarks) * 10) / 10;
-      const grade = getGradeFromMarks(total, gradeScale);
+      const clampedTarget = Math.max(0, Math.min(scenarioComp.maxMarks, sc.targetMarks));
+      const total = Math.round((otherMarksSum + clampedTarget) * 100) / 100;
+      const pct = maxTotalMarks > 0 ? Math.round((total / maxTotalMarks) * 10000) / 100 : 0;
+      const grade = getGradeFromMarks(pct, gradeScale);
+      const scenarioAssessments = simulatedAssessments.map((a) =>
+        a.id === scenarioComp.id ? { ...a, obtainedMarks: clampedTarget } : a
+      );
       const simulatedSemCourses = semesterCourses.map((c) =>
         c.id === activeCourse.id
           ? {
               ...c,
-              midterm1: mid1,
-              midterm2: mid2,
-              attendance,
-              finalExam: sc.finalMarks,
+              assessments: scenarioAssessments,
+              totalMarksOverride: null,
             }
           : c
       );
@@ -169,7 +242,9 @@ export function GradePredictorPage() {
       });
       return {
         ...sc,
+        targetMarks: clampedTarget,
         total,
+        pct,
         letter: grade.letter,
         point: grade.point,
         semGpa: semRes.gpa ?? 0,
@@ -179,25 +254,31 @@ export function GradePredictorPage() {
   }, [
     scenarios,
     activeCourse,
-    internalTotal,
+    scenarioComp,
+    otherMarksSum,
+    maxTotalMarks,
     gradeScale,
+    simulatedAssessments,
     semesterCourses,
     courses,
     rules,
-    mid1,
-    mid2,
-    attendance,
   ]);
+
+  const handleComponentDraftChange = (comp: AssessmentComponent, rawNum: number) => {
+    const safe = Number.isNaN(rawNum) ? 0 : Math.max(0, Math.min(comp.maxMarks, rawNum));
+    setDraftMarks((prev) => ({
+      ...prev,
+      [comp.id]: Math.round(safe * 100) / 100,
+    }));
+  };
 
   const handleSaveToCourse = () => {
     if (!activeCourse) return;
     updateCourse(
       activeCourse.id,
       {
-        midterm1: mid1,
-        midterm2: mid2,
-        attendance,
-        finalExam,
+        assessments: simulatedAssessments,
+        totalMarksOverride: null,
       },
       `Predicted marks saved for ${activeCourse.name}`
     );
@@ -207,20 +288,21 @@ export function GradePredictorPage() {
 
   const handleResetToCourse = () => {
     if (!activeCourse) return;
-    setMid1(activeCourse.midterm1 ?? 7);
-    setMid2(activeCourse.midterm2 ?? 7);
-    setAttendance(activeCourse.attendance ?? 8);
-    setFinalExam(activeCourse.finalExam ?? 50);
+    setDraftMarks(buildInitialDraftMarks(activeCourse.assessments));
   };
 
   const addScenario = () => {
-    if (scenarios.length >= 6) return;
+    if (scenarios.length >= 6 || !scenarioComp) return;
+    const step = Math.max(1, Math.round(scenarioComp.maxMarks * 0.08));
     setScenarios((prev) => [
       ...prev,
       {
         id: `sc-${Date.now()}`,
         label: `Scenario ${prev.length + 1}`,
-        finalMarks: Math.min(70, (prev[prev.length - 1]?.finalMarks ?? 45) + 5),
+        targetMarks: Math.min(
+          scenarioComp.maxMarks,
+          (prev[prev.length - 1]?.targetMarks ?? Math.round(scenarioComp.maxMarks * 0.7)) + step
+        ),
       },
     ]);
   };
@@ -232,7 +314,7 @@ export function GradePredictorPage() {
           Add a semester and course to start predicting grades
         </h2>
         <p className="mt-1 text-sm font-medium text-[#29232D]/70">
-          Grade Predictor uses your enrolled courses and credit hours to estimate semester GPA and cumulative CGPA.
+          Grade Predictor uses your course&apos;s configured assessment structure and credit hours to project semester GPA and CGPA.
         </p>
       </div>
     );
@@ -247,7 +329,7 @@ export function GradePredictorPage() {
           Grade &amp; GPA Predictor
         </h2>
         <p className="mt-1 text-sm font-medium text-[#29232D]/75">
-          Model expected midterm, attendance, and final examination marks to project your course grade, semester GPA, and cumulative CGPA.
+          Experiment with expected marks across every configured assessment component to forecast your course grade, percentage, semester GPA, and cumulative CGPA.
         </p>
       </div>
 
@@ -305,147 +387,82 @@ export function GradePredictorPage() {
 
           {activeCourse && (
             <div className="pt-4 border-t-2 border-[#29232D]/15 space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-extrabold text-[#29232D]">
                   3. Expected Assessment Marks
                 </span>
-                <span className="rounded-lg border-2 border-[#29232D] bg-[#FCE2DE] px-2.5 py-0.5 text-xs font-mono font-extrabold tabular-nums text-[#29232D]">
-                  Internal: {internalTotal}/30
-                </span>
-              </div>
-
-              {internalTotal < rules.minInternalMarks && (
-                <div className="flex items-start gap-2 rounded-xl border-2 border-[#29232D] bg-[#FFF4D6] px-3 py-2.5 text-xs font-bold text-[#29232D]">
-                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-[#B45309]" />
-                  <span>
-                    Internal marks ({internalTotal}/30) are below the {rules.minInternalMarks}-mark minimum required to sit for the final exam without a retake.
+                {internalSummary.max > 0 && (
+                  <span className="rounded-lg border-2 border-[#29232D] bg-[#FCE2DE] px-2.5 py-0.5 text-xs font-mono font-extrabold tabular-nums text-[#29232D]">
+                    Internal: {internalSummary.obtained}/{internalSummary.max} (
+                    {Math.round(internalSummary.percentage ?? 0)}%)
                   </span>
-                </div>
-              )}
-
-              {/* Midterm 1 */}
-              <div>
-                <div className="flex items-center justify-between text-xs mb-1.5">
-                  <label htmlFor="slider-m1" className="font-bold text-[#29232D]">
-                    Midterm 1 (Max 10)
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="10"
-                    step="0.5"
-                    value={mid1}
-                    onChange={(e) =>
-                      setMid1(Math.max(0, Math.min(10, Number(e.target.value) || 0)))
-                    }
-                    className="w-16 rounded-lg border-2 border-[#29232D] px-2 py-0.5 text-right font-mono text-xs font-bold tabular-nums text-[#29232D]"
-                  />
-                </div>
-                <input
-                  id="slider-m1"
-                  type="range"
-                  min="0"
-                  max="10"
-                  step="0.5"
-                  value={mid1}
-                  onChange={(e) => setMid1(Number(e.target.value))}
-                  className="w-full accent-[#7955A1] cursor-pointer"
-                />
+                )}
               </div>
 
-              {/* Midterm 2 */}
-              <div>
-                <div className="flex items-center justify-between text-xs mb-1.5">
-                  <label htmlFor="slider-m2" className="font-bold text-[#29232D]">
-                    Midterm 2 (Max 10)
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="10"
-                    step="0.5"
-                    value={mid2}
-                    onChange={(e) =>
-                      setMid2(Math.max(0, Math.min(10, Number(e.target.value) || 0)))
-                    }
-                    className="w-16 rounded-lg border-2 border-[#29232D] px-2 py-0.5 text-right font-mono text-xs font-bold tabular-nums text-[#29232D]"
-                  />
-                </div>
-                <input
-                  id="slider-m2"
-                  type="range"
-                  min="0"
-                  max="10"
-                  step="0.5"
-                  value={mid2}
-                  onChange={(e) => setMid2(Number(e.target.value))}
-                  className="w-full accent-[#7955A1] cursor-pointer"
-                />
-              </div>
+              {internalSummary.max > 0 &&
+                (internalSummary.percentage ?? 0) < rules.minInternalPercent && (
+                  <div className="flex items-start gap-2 rounded-xl border-2 border-[#29232D] bg-[#FFF4D6] px-3 py-2.5 text-xs font-bold text-[#29232D]">
+                    <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-[#B45309]" />
+                    <span>
+                      Internal marks ({internalSummary.obtained}/{internalSummary.max},{' '}
+                      {Math.round(internalSummary.percentage ?? 0)}%) are below the{' '}
+                      {rules.minInternalPercent}% minimum required without a retake.
+                    </span>
+                  </div>
+                )}
 
-              {/* Attendance */}
-              <div>
-                <div className="flex items-center justify-between text-xs mb-1.5">
-                  <label htmlFor="slider-att" className="font-bold text-[#29232D]">
-                    Attendance (Max 10)
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="10"
-                    step="0.5"
-                    value={attendance}
-                    onChange={(e) =>
-                      setAttendance(
-                        Math.max(0, Math.min(10, Number(e.target.value) || 0))
-                      )
-                    }
-                    className="w-16 rounded-lg border-2 border-[#29232D] px-2 py-0.5 text-right font-mono text-xs font-bold tabular-nums text-[#29232D]"
-                  />
-                </div>
-                <input
-                  id="slider-att"
-                  type="range"
-                  min="0"
-                  max="10"
-                  step="0.5"
-                  value={attendance}
-                  onChange={(e) => setAttendance(Number(e.target.value))}
-                  className="w-full accent-[#7955A1] cursor-pointer"
-                />
-              </div>
+              {activeCourse.assessments.map((comp) => {
+                const val = draftMarks[comp.id] ?? 0;
+                const isRecorded = comp.obtainedMarks !== null;
 
-              {/* Final Exam */}
-              <div>
-                <div className="flex items-center justify-between text-xs mb-1.5">
-                  <label htmlFor="slider-fin" className="font-bold text-[#29232D]">
-                    Expected Final Exam (Max 70)
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="70"
-                    step="0.5"
-                    value={finalExam}
-                    onChange={(e) =>
-                      setFinalExam(
-                        Math.max(0, Math.min(70, Number(e.target.value) || 0))
-                      )
-                    }
-                    className="w-16 rounded-lg border-2 border-[#29232D] px-2 py-0.5 text-right font-mono text-xs font-bold tabular-nums text-[#29232D]"
-                  />
-                </div>
-                <input
-                  id="slider-fin"
-                  type="range"
-                  min="0"
-                  max="70"
-                  step="0.5"
-                  value={finalExam}
-                  onChange={(e) => setFinalExam(Number(e.target.value))}
-                  className="w-full accent-[#7955A1] cursor-pointer"
-                />
-              </div>
+                return (
+                  <div key={comp.id}>
+                    <div className="flex items-center justify-between gap-2 text-xs mb-1.5">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <label
+                          htmlFor={`slider-${comp.id}`}
+                          className="font-bold text-[#29232D] truncate"
+                        >
+                          {comp.name} (Max {comp.maxMarks})
+                        </label>
+                        <span
+                          className={`rounded-md border border-[#29232D]/30 px-1.5 py-0.5 text-[10px] font-bold shrink-0 ${
+                            isRecorded
+                              ? 'bg-[#DDF3E0] text-[#29232D]'
+                              : 'bg-[#FFF4D6] text-[#92400E]'
+                          }`}
+                        >
+                          {isRecorded ? 'Recorded' : 'Expected'}
+                        </span>
+                      </div>
+                      <input
+                        type="number"
+                        min="0"
+                        max={comp.maxMarks}
+                        step="0.5"
+                        value={val}
+                        onChange={(e) =>
+                          handleComponentDraftChange(comp, Number(e.target.value))
+                        }
+                        aria-label={`${comp.name} predicted score`}
+                        className="w-16 rounded-lg border-2 border-[#29232D] px-2 py-0.5 text-right font-mono text-xs font-bold tabular-nums text-[#29232D]"
+                      />
+                    </div>
+                    <input
+                      id={`slider-${comp.id}`}
+                      type="range"
+                      min="0"
+                      max={comp.maxMarks}
+                      step="0.5"
+                      value={val}
+                      onChange={(e) =>
+                        handleComponentDraftChange(comp, Number(e.target.value))
+                      }
+                      className="w-full accent-[#7955A1] cursor-pointer"
+                    />
+                  </div>
+                );
+              })}
 
               <div className="pt-3 border-t-2 border-[#29232D]/15 flex flex-wrap items-center gap-2.5">
                 <button
@@ -491,7 +508,7 @@ export function GradePredictorPage() {
                 </p>
               </div>
               <span className="rounded-lg border-2 border-[#29232D] bg-[#FFF4D6] px-2.5 py-1 text-xs font-mono font-bold text-[#29232D]">
-                10 + 10 + 10 + 70 = 100
+                {distributionFormula}
               </span>
             </div>
 
@@ -500,7 +517,12 @@ export function GradePredictorPage() {
                 <p className="text-[11px] font-bold text-[#29232D]/70">Predicted Total</p>
                 <p className="mt-1 font-display text-2xl font-extrabold text-[#29232D] tabular-nums">
                   {predictedTotal}
-                  <span className="text-xs font-semibold text-[#29232D]/60">/100</span>
+                  <span className="text-xs font-semibold text-[#29232D]/60">
+                    /{maxTotalMarks}
+                  </span>
+                </p>
+                <p className="text-[11px] font-mono font-bold text-[#7955A1] tabular-nums">
+                  {predictedPercentage.toFixed(1)}%
                 </p>
               </div>
 
@@ -552,165 +574,179 @@ export function GradePredictorPage() {
           </section>
 
           {/* Scenario Comparison */}
-          <section className="rounded-[22px] border-2 border-[#29232D] bg-white p-5 sm:p-6 shadow-[4px_4px_0_#29232D] space-y-5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h3 className="font-display text-base font-extrabold text-[#29232D]">
-                  Final Exam Scenario Comparison
-                </h3>
-                <p className="text-xs font-medium text-[#29232D]/70 mt-0.5">
-                  Compare how different final examination scores impact your grade and cumulative CGPA
-                </p>
+          {scenarioComp && (
+            <section className="rounded-[22px] border-2 border-[#29232D] bg-white p-5 sm:p-6 shadow-[4px_4px_0_#29232D] space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-display text-base font-extrabold text-[#29232D]">
+                    {scenarioComp.name} Scenario Comparison
+                  </h3>
+                  <p className="text-xs font-medium text-[#29232D]/70 mt-0.5">
+                    Compare how different scores in {scenarioComp.name} (/{scenarioComp.maxMarks}) impact your grade and cumulative CGPA
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={addScenario}
+                  disabled={scenarios.length >= 6}
+                  className="inline-flex items-center gap-1.5 rounded-xl border-2 border-[#29232D] bg-[#F6D36B] px-3 py-1.5 text-xs font-extrabold text-[#29232D] hover:bg-[#FCE2DE] disabled:opacity-40 whitespace-nowrap"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Add Scenario
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={addScenario}
-                disabled={scenarios.length >= 6}
-                className="inline-flex items-center gap-1.5 rounded-xl border-2 border-[#29232D] bg-[#F6D36B] px-3 py-1.5 text-xs font-extrabold text-[#29232D] hover:bg-[#FCE2DE] disabled:opacity-40 whitespace-nowrap"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Add Scenario
-              </button>
-            </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b-2 border-[#29232D] text-[11px] font-extrabold uppercase tracking-wide text-[#29232D]">
-                    <th className="py-2.5 pr-3">Scenario</th>
-                    <th className="py-2.5 px-3 text-right whitespace-nowrap">Final (/70)</th>
-                    <th className="py-2.5 px-3 text-right whitespace-nowrap">Total (/100)</th>
-                    <th className="py-2.5 px-3 text-right">Grade</th>
-                    <th className="py-2.5 px-3 text-right">GP</th>
-                    <th className="py-2.5 px-3 text-right whitespace-nowrap">Sem GPA</th>
-                    <th className="py-2.5 px-3 text-right whitespace-nowrap">Est. CGPA</th>
-                    <th className="py-2.5 pl-2"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y-2 divide-[#29232D]/10 text-xs">
-                  {scenarioRows.map((row) => (
-                    <tr key={row.id} className="hover:bg-[#FCE2DE]/30">
-                      <td className="py-2.5 pr-3">
-                        <input
-                          type="text"
-                          value={row.label}
-                          onChange={(e) =>
-                            setScenarios((prev) =>
-                              prev.map((s) =>
-                                s.id === row.id ? { ...s, label: e.target.value } : s
-                              )
-                            )
-                          }
-                          className="w-28 rounded-lg border-2 border-transparent hover:border-[#29232D]/40 focus:border-[#29232D] px-1.5 py-1 font-bold text-[#29232D] focus:outline-none"
-                        />
-                      </td>
-                      <td className="py-2.5 px-3 text-right">
-                        <input
-                          type="number"
-                          min="0"
-                          max="70"
-                          value={row.finalMarks}
-                          onChange={(e) => {
-                            const val = Math.max(
-                              0,
-                              Math.min(70, Number(e.target.value) || 0)
-                            );
-                            setScenarios((prev) =>
-                              prev.map((s) =>
-                                s.id === row.id ? { ...s, finalMarks: val } : s
-                              )
-                            );
-                          }}
-                          className="w-16 rounded-lg border-2 border-[#29232D] px-2 py-1 text-right font-mono font-bold tabular-nums text-[#29232D] focus:outline-none"
-                        />
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono font-bold tabular-nums text-[#29232D]">
-                        {row.total}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono font-extrabold text-[#29232D]">
-                        {row.letter}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono font-semibold tabular-nums text-[#29232D]">
-                        {row.point.toFixed(2)}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono font-semibold tabular-nums text-[#29232D]">
-                        {row.semGpa.toFixed(2)}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono font-extrabold tabular-nums text-[#7955A1]">
-                        {row.cgpa.toFixed(2)}
-                      </td>
-                      <td className="py-2.5 pl-2 text-right">
-                        {scenarios.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setScenarios((prev) => prev.filter((s) => s.id !== row.id))
-                            }
-                            className="rounded-lg p-1 text-[#29232D]/60 hover:bg-[#F8D0CC] hover:text-[#991B1B]"
-                            aria-label={`Remove ${row.label}`}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </td>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b-2 border-[#29232D] text-[11px] font-extrabold uppercase tracking-wide text-[#29232D]">
+                      <th className="py-2.5 pr-3">Scenario</th>
+                      <th className="py-2.5 px-3 text-right whitespace-nowrap">
+                        {scenarioComp.name} (/{scenarioComp.maxMarks})
+                      </th>
+                      <th className="py-2.5 px-3 text-right whitespace-nowrap">
+                        Total (/{maxTotalMarks})
+                      </th>
+                      <th className="py-2.5 px-3 text-right whitespace-nowrap">Pct</th>
+                      <th className="py-2.5 px-3 text-right">Grade</th>
+                      <th className="py-2.5 px-3 text-right">GP</th>
+                      <th className="py-2.5 px-3 text-right whitespace-nowrap">Sem GPA</th>
+                      <th className="py-2.5 px-3 text-right whitespace-nowrap">Est. CGPA</th>
+                      <th className="py-2.5 pl-2"></th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {scenarioRows.length > 0 && (
-              <div className="h-[190px] w-full pt-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={scenarioRows}
-                    margin={{ top: 8, right: 12, left: -16, bottom: 0 }}
-                  >
-                    <CartesianGrid stroke="#29232D" strokeOpacity={0.12} strokeDasharray="4 4" vertical={false} />
-                    <XAxis
-                      dataKey="label"
-                      tick={{ fill: '#29232D', fontSize: 12, fontWeight: 700 }}
-                      axisLine={{ stroke: '#29232D' }}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      domain={[2.0, 4.0]}
-                      ticks={[2.0, 2.5, 3.0, 3.5, 4.0]}
-                      tick={{ fill: '#29232D', fontSize: 12, fontWeight: 700 }}
-                      axisLine={false}
-                      tickLine={false}
-                      tickFormatter={(v) => Number(v).toFixed(1)}
-                    />
-                    <Tooltip
-                      content={({ active, payload }) => {
-                        if (!active || !payload || !payload.length) return null;
-                        const d = payload[0].payload as (typeof scenarioRows)[number];
-                        return (
-                          <div className="rounded-xl border-2 border-[#29232D] bg-white px-3 py-2 shadow-[3px_3px_0_#29232D] text-xs font-mono tabular-nums">
-                            <p className="font-display font-extrabold text-[#29232D]">{d.label}</p>
-                            <p className="text-[#29232D]/80 font-semibold mt-1">
-                              Final: {d.finalMarks}/70 · Grade: {d.letter} ({d.point.toFixed(2)})
-                            </p>
-                            <p className="text-[#7955A1] font-bold">
-                              Sem GPA: {d.semGpa.toFixed(2)} · CGPA: {d.cgpa.toFixed(2)}
-                            </p>
-                          </div>
-                        );
-                      }}
-                    />
-                    <Bar dataKey="cgpa" radius={[8, 8, 0, 0]} maxBarSize={48} stroke="#29232D" strokeWidth={2}>
-                      {scenarioRows.map((_, idx) => (
-                        <Cell
-                          key={idx}
-                          fill={SCENARIO_COLORS[idx % SCENARIO_COLORS.length]}
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+                  </thead>
+                  <tbody className="divide-y-2 divide-[#29232D]/10 text-xs">
+                    {scenarioRows.map((row) => (
+                      <tr key={row.id} className="hover:bg-[#FCE2DE]/30">
+                        <td className="py-2.5 pr-3">
+                          <input
+                            type="text"
+                            value={row.label}
+                            onChange={(e) =>
+                              setScenarios((prev) =>
+                                prev.map((s) =>
+                                  s.id === row.id ? { ...s, label: e.target.value } : s
+                                )
+                              )
+                            }
+                            className="w-28 rounded-lg border-2 border-transparent hover:border-[#29232D]/40 focus:border-[#29232D] px-1.5 py-1 font-bold text-[#29232D] focus:outline-none"
+                          />
+                        </td>
+                        <td className="py-2.5 px-3 text-right">
+                          <input
+                            type="number"
+                            min="0"
+                            max={scenarioComp.maxMarks}
+                            step="0.5"
+                            value={row.targetMarks}
+                            onChange={(e) => {
+                              const val = Math.max(
+                                0,
+                                Math.min(
+                                  scenarioComp.maxMarks,
+                                  Number(e.target.value) || 0
+                                )
+                              );
+                              setScenarios((prev) =>
+                                prev.map((s) =>
+                                  s.id === row.id ? { ...s, targetMarks: val } : s
+                                )
+                              );
+                            }}
+                            className="w-16 rounded-lg border-2 border-[#29232D] px-2 py-1 text-right font-mono font-bold tabular-nums text-[#29232D] focus:outline-none"
+                          />
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-bold tabular-nums text-[#29232D]">
+                          {row.total}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-semibold tabular-nums text-[#7955A1]">
+                          {row.pct.toFixed(1)}%
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-extrabold text-[#29232D]">
+                          {row.letter}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-semibold tabular-nums text-[#29232D]">
+                          {row.point.toFixed(2)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-semibold tabular-nums text-[#29232D]">
+                          {row.semGpa.toFixed(2)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-extrabold tabular-nums text-[#7955A1]">
+                          {row.cgpa.toFixed(2)}
+                        </td>
+                        <td className="py-2.5 pl-2 text-right">
+                          {scenarios.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setScenarios((prev) => prev.filter((s) => s.id !== row.id))
+                              }
+                              className="rounded-lg p-1 text-[#29232D]/60 hover:bg-[#F8D0CC] hover:text-[#991B1B]"
+                              aria-label={`Remove ${row.label}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            )}
-          </section>
+
+              {scenarioRows.length > 0 && (
+                <div className="h-[190px] w-full pt-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={scenarioRows}
+                      margin={{ top: 8, right: 12, left: -16, bottom: 0 }}
+                    >
+                      <CartesianGrid stroke="#29232D" strokeOpacity={0.12} strokeDasharray="4 4" vertical={false} />
+                      <XAxis
+                        dataKey="label"
+                        tick={{ fill: '#29232D', fontSize: 12, fontWeight: 700 }}
+                        axisLine={{ stroke: '#29232D' }}
+                        tickLine={false}
+                      />
+                      <YAxis
+                        domain={[2.0, 4.0]}
+                        ticks={[2.0, 2.5, 3.0, 3.5, 4.0]}
+                        tick={{ fill: '#29232D', fontSize: 12, fontWeight: 700 }}
+                        axisLine={false}
+                        tickLine={false}
+                        tickFormatter={(v) => Number(v).toFixed(1)}
+                      />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (!active || !payload || !payload.length) return null;
+                          const d = payload[0].payload as (typeof scenarioRows)[number];
+                          return (
+                            <div className="rounded-xl border-2 border-[#29232D] bg-white px-3 py-2 shadow-[3px_3px_0_#29232D] text-xs font-mono tabular-nums">
+                              <p className="font-display font-extrabold text-[#29232D]">{d.label}</p>
+                              <p className="text-[#29232D]/80 font-semibold mt-1">
+                                {scenarioComp.name}: {d.targetMarks}/{scenarioComp.maxMarks} · {d.pct.toFixed(1)}% · Grade: {d.letter} ({d.point.toFixed(2)})
+                              </p>
+                              <p className="text-[#7955A1] font-bold">
+                                Sem GPA: {d.semGpa.toFixed(2)} · CGPA: {d.cgpa.toFixed(2)}
+                              </p>
+                            </div>
+                          );
+                        }}
+                      />
+                      <Bar dataKey="cgpa" radius={[8, 8, 0, 0]} maxBarSize={48} stroke="#29232D" strokeWidth={2}>
+                        {scenarioRows.map((_, idx) => (
+                          <Cell
+                            key={idx}
+                            fill={SCENARIO_COLORS[idx % SCENARIO_COLORS.length]}
+                          />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </section>
+          )}
         </div>
       </div>
     </div>

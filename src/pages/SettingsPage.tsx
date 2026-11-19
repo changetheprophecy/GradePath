@@ -1,8 +1,14 @@
 import React, { useState } from 'react';
-import { Check, Download, RotateCcw, Trash2, Upload, X } from 'lucide-react';
+import { Bell, BellRing, Check, Download, RotateCcw, Trash2, Upload, X } from 'lucide-react';
 import { useAcademic } from '../context/AcademicContext';
 import { ReplacementPolicy } from '../types/academic';
 import { Avatar } from '../components/Avatar';
+import { AssessmentTemplateEditor } from '../components/AssessmentTemplateEditor';
+import {
+  BrowserNotificationSupportStatus,
+  getBrowserNotificationStatus,
+  requestBrowserNotificationPermission,
+} from '../utils/notifications';
 
 const SAMPLE_AVATAR_URL = '/src/assets/images/avatar_student_atasi_1795098737298.jpg';
 
@@ -11,12 +17,21 @@ export function SettingsPage() {
     profile,
     rules,
     gradeScale,
+    defaultAssessments,
     semesters,
     courses,
+    notifications,
+    notificationPrefs,
+    dismissedNotificationCount,
     updateProfile,
     updateRules,
     updateGradeScale,
     resetGradeScale,
+    updateDefaultAssessments,
+    resetDefaultAssessments,
+    updateNotificationPrefs,
+    restoreDismissedNotifications,
+    triggerTestLocalNotification,
     resetToDemoData,
     clearAllData,
     logout,
@@ -32,6 +47,10 @@ export function SettingsPage() {
   const [avatarError, setAvatarError] = useState('');
   const [savedBanner, setSavedBanner] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [browserStatus, setBrowserStatus] = useState<BrowserNotificationSupportStatus>(() =>
+    getBrowserNotificationStatus()
+  );
+  const [notifFeedback, setNotifFeedback] = useState('');
 
   const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -336,16 +355,16 @@ export function SettingsPage() {
 
           <div>
             <label className="block text-xs font-bold text-[#29232D] mb-1.5">
-              Minimum Internal Marks (/30)
+              Minimum Internal Score (%)
             </label>
             <input
               type="number"
               min="0"
-              max="30"
-              value={rules.minInternalMarks}
+              max="100"
+              value={rules.minInternalPercent}
               onChange={(e) =>
                 updateRules({
-                  minInternalMarks: Math.max(0, Math.min(30, Number(e.target.value) || 0)),
+                  minInternalPercent: Math.max(0, Math.min(100, Number(e.target.value) || 0)),
                 })
               }
               className="w-full rounded-xl border-2 border-[#29232D] px-3 py-2 text-sm font-mono font-bold tabular-nums text-[#29232D]"
@@ -375,6 +394,24 @@ export function SettingsPage() {
             </select>
           </div>
         </div>
+      </section>
+
+      {/* Default Assessment Distribution */}
+      <section className="rounded-[22px] border-2 border-[#29232D] bg-white p-5 sm:p-6 shadow-[4px_4px_0_#29232D]">
+        <div className="border-b-2 border-[#29232D]/10 pb-4 mb-5">
+          <h3 className="font-display text-base font-extrabold text-[#29232D]">
+            Default Assessment Marks Distribution
+          </h3>
+          <p className="text-xs font-medium text-[#29232D]/70 mt-0.5">
+            Configure the default assessment components used when adding new courses. Each course can also define its own custom breakdown.
+          </p>
+        </div>
+
+        <AssessmentTemplateEditor
+          template={defaultAssessments}
+          onChange={updateDefaultAssessments}
+          onReset={resetDefaultAssessments}
+        />
       </section>
 
       {/* Grading Scale Table */}
@@ -458,6 +495,194 @@ export function SettingsPage() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      {/* Local Notifications & Reminders */}
+      <section className="rounded-[22px] border-2 border-[#29232D] bg-white p-5 sm:p-6 shadow-[4px_4px_0_#29232D]">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b-2 border-[#29232D]/10 pb-4">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border-2 border-[#29232D] bg-[#F6D36B] text-[#29232D]">
+              <Bell className="h-4 w-4" />
+            </div>
+            <div>
+              <h3 className="font-display text-base font-extrabold text-[#29232D]">
+                Local Notifications &amp; Reminders
+              </h3>
+              <p className="text-xs font-medium text-[#29232D]/70 mt-0.5">
+                Get automatic alerts for upcoming examination dates and missing course marks ({notifications.length} active)
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              const res = triggerTestLocalNotification();
+              setNotifFeedback(res.message);
+            }}
+            className="inline-flex items-center gap-1.5 rounded-xl border-2 border-[#29232D] bg-[#FCE2DE] px-3 py-1.5 text-xs font-bold text-[#29232D] hover:bg-[#F8D0CC]"
+          >
+            <BellRing className="h-3.5 w-3.5" />
+            Send Test Alert
+          </button>
+        </div>
+
+        <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <label className="flex items-start justify-between gap-3 rounded-2xl border-2 border-[#29232D] bg-[#F5F3F2] p-4 cursor-pointer">
+            <div>
+              <p className="text-xs font-extrabold text-[#29232D]">Enable Local Alerts</p>
+              <p className="text-xs font-medium text-[#29232D]/70 mt-0.5">
+                Show alerts in the bell menu, dashboard reminder strip, and session toast
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              checked={notificationPrefs.enabled}
+              onChange={(e) => updateNotificationPrefs({ enabled: e.target.checked })}
+              className="mt-0.5 h-4 w-4 rounded border-2 border-[#29232D] accent-[#7955A1]"
+            />
+          </label>
+
+          <label className="flex items-start justify-between gap-3 rounded-2xl border-2 border-[#29232D] bg-[#F5F3F2] p-4 cursor-pointer">
+            <div>
+              <p className="text-xs font-extrabold text-[#29232D]">Missing Marks Alerts</p>
+              <p className="text-xs font-medium text-[#29232D]/70 mt-0.5">
+                Flag courses with missing assessment marks or low internal percentages
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              checked={notificationPrefs.missingMarksAlertsEnabled}
+              disabled={!notificationPrefs.enabled}
+              onChange={(e) =>
+                updateNotificationPrefs({ missingMarksAlertsEnabled: e.target.checked })
+              }
+              className="mt-0.5 h-4 w-4 rounded border-2 border-[#29232D] accent-[#7955A1]"
+            />
+          </label>
+
+          <div className="rounded-2xl border-2 border-[#29232D] bg-[#F5F3F2] p-4 space-y-3">
+            <label className="flex items-start justify-between gap-3 cursor-pointer">
+              <div>
+                <p className="text-xs font-extrabold text-[#29232D]">Upcoming Exam Reminders</p>
+                <p className="text-xs font-medium text-[#29232D]/70 mt-0.5">
+                  Alert before scheduled exam dates and when past-due finals need scores
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={notificationPrefs.examAlertsEnabled}
+                disabled={!notificationPrefs.enabled}
+                onChange={(e) =>
+                  updateNotificationPrefs({ examAlertsEnabled: e.target.checked })
+                }
+                className="mt-0.5 h-4 w-4 rounded border-2 border-[#29232D] accent-[#7955A1]"
+              />
+            </label>
+
+            <div>
+              <label className="block text-[11px] font-bold text-[#29232D]/80 mb-1">
+                Alert Window Before Exam
+              </label>
+              <select
+                value={notificationPrefs.examLeadDays}
+                disabled={!notificationPrefs.enabled || !notificationPrefs.examAlertsEnabled}
+                onChange={(e) =>
+                  updateNotificationPrefs({ examLeadDays: Number(e.target.value) || 21 })
+                }
+                className="w-full rounded-xl border-2 border-[#29232D] bg-white px-3 py-1.5 text-xs font-bold text-[#29232D] disabled:opacity-50"
+              >
+                <option value={7}>7 days before exam</option>
+                <option value={14}>14 days before exam</option>
+                <option value={21}>21 days before exam</option>
+                <option value={30}>30 days before exam</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border-2 border-[#29232D] bg-[#F5F3F2] p-4 flex flex-col justify-between gap-3">
+            <label className="flex items-start justify-between gap-3 cursor-pointer">
+              <div>
+                <p className="text-xs font-extrabold text-[#29232D]">Browser Desktop Alerts</p>
+                <p className="text-xs font-medium text-[#29232D]/70 mt-0.5">
+                  Status:{' '}
+                  <span className="font-bold text-[#7955A1]">
+                    {browserStatus === 'granted'
+                      ? 'Permitted'
+                      : browserStatus === 'denied'
+                        ? 'Blocked in browser'
+                        : browserStatus === 'unsupported'
+                          ? 'Not supported here'
+                          : 'Permission not requested'}
+                  </span>
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={notificationPrefs.browserNotificationsEnabled}
+                disabled={!notificationPrefs.enabled || browserStatus === 'unsupported'}
+                onChange={async (e) => {
+                  const checked = e.target.checked;
+                  if (checked && browserStatus === 'default') {
+                    const perm = await requestBrowserNotificationPermission();
+                    setBrowserStatus(perm);
+                    updateNotificationPrefs({
+                      browserNotificationsEnabled: perm === 'granted',
+                    });
+                    setNotifFeedback(
+                      perm === 'granted'
+                        ? 'Browser desktop alerts enabled.'
+                        : 'Browser permission was not granted—in-app alerts remain active.'
+                    );
+                  } else {
+                    updateNotificationPrefs({ browserNotificationsEnabled: checked });
+                  }
+                }}
+                className="mt-0.5 h-4 w-4 rounded border-2 border-[#29232D] accent-[#7955A1]"
+              />
+            </label>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {browserStatus === 'default' && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const perm = await requestBrowserNotificationPermission();
+                    setBrowserStatus(perm);
+                    if (perm === 'granted') {
+                      updateNotificationPrefs({ browserNotificationsEnabled: true });
+                      setNotifFeedback('Browser notification permission granted.');
+                    } else {
+                      setNotifFeedback(
+                        'Permission not granted. GradePath will still display all in-app local alerts.'
+                      );
+                    }
+                  }}
+                  className="rounded-xl border-2 border-[#29232D] bg-white px-3 py-1.5 text-xs font-bold text-[#29232D] hover:bg-[#E5D8F3]"
+                >
+                  Allow Browser Alerts
+                </button>
+              )}
+
+              {dismissedNotificationCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    restoreDismissedNotifications();
+                    setNotifFeedback('All dismissed alerts restored.');
+                  }}
+                  className="rounded-xl border-2 border-[#29232D] bg-white px-3 py-1.5 text-xs font-bold text-[#7955A1] hover:bg-[#FCE2DE]"
+                >
+                  Restore {dismissedNotificationCount} Dismissed
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {notifFeedback && (
+          <p className="mt-3 text-xs font-bold text-[#7955A1]">{notifFeedback}</p>
+        )}
       </section>
 
       {/* Data & Account Actions */}
